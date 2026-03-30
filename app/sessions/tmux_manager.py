@@ -84,6 +84,9 @@ class TmuxManager:
             raise TmuxUnavailableError("tmux is not installed or not available on PATH")
         return subprocess.call(["tmux", "attach-session", "-t", session_name])
 
+    def kill_session(self, session_name: str) -> None:
+        self._run(["tmux", "kill-session", "-t", session_name], check=False)
+
     def _session_exists(self, session_name: str) -> bool:
         result = self._run(["tmux", "has-session", "-t", session_name], check=False)
         return result.returncode == 0

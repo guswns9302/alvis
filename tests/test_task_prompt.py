@@ -18,3 +18,5 @@ def test_task_prompt_contains_contract_fields():
     )
     assert "task_id: task-1" in prompt
     assert "goal: Do the work" in prompt
+    assert "ALVIS_RESULT_START" in prompt
+    assert "SUMMARY: <one concise summary line>" in prompt

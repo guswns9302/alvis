@@ -37,7 +37,19 @@ class TaskContract(BaseModel):
     goal: str
     constraints: list[str] = Field(default_factory=list)
     expected_output: list[str] = Field(default_factory=list)
-    completion_rule: str = "Reply with a concise completion summary and testing status."
+    completion_rule: str = (
+        "Finish by printing a structured result block using this exact format:\n"
+        "ALVIS_RESULT_START\n"
+        "SUMMARY: <one concise summary line>\n"
+        "CHANGED_FILES:\n"
+        "- <path or file summary>\n"
+        "TEST_RESULTS:\n"
+        "- <test result>\n"
+        "RISK_FLAGS:\n"
+        "- <risk or blocker>\n"
+        "ALVIS_RESULT_END\n"
+        "If a section has no items, leave it empty but keep the section header."
+    )
     context: dict[str, Any] = Field(default_factory=dict)
 
 

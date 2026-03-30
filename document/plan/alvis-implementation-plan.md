@@ -48,7 +48,7 @@
 - [x] pane snapshot 기능 작성
 - [x] Codex adapter 작성
 - [x] task prompt contract 구현
-- [x] Codex stdout/stderr 구조화 수집기 초안 구현
+- [x] Codex stdout/stderr 구조화 수집기 구현
 - [x] heartbeat 파일 기반 모니터 초안 연결
 
 ### Phase 4. 작업공간 격리
@@ -113,8 +113,8 @@
 - [x] CLI smoke test
 - [x] review approve 후 run 완료 smoke test
 - [x] recovery reconciliation 테스트
-- [ ] repository 테스트 확장
-- [ ] tmux manager 테스트 또는 mock 기반 테스트
+- [x] repository 테스트 확장
+- [x] tmux manager 실제 통합 테스트
 - [ ] e2e 시나리오 테스트
 
 ## 3. 남은 핵심 구현 항목
@@ -122,10 +122,9 @@
 다음 항목은 실제 운영 가능한 수준으로 가기 위해 우선적으로 마무리해야 한다.
 
 1. LangGraph interrupt/resume 정교화
-2. output collector 품질 고도화
-3. 테스트 확장
-4. CLI 출력 개선
-5. migration/checkpointer 정리
+2. e2e 시나리오 테스트
+3. CLI 출력 개선
+4. migration/checkpointer 정리
 
 ## 4. 운영 기준
 
@@ -139,8 +138,7 @@
 
 가장 먼저 이어서 구현할 항목은 다음 순서로 진행한다.
 
-1. repository/tmux 통합 테스트 추가
-2. output collector 품질 고도화
+1. LangGraph interrupt/resume 정교화
+2. e2e 시나리오 테스트
 3. CLI 출력 개선
-4. LangGraph interrupt/resume 정교화
-5. migration/checkpointer 정리
+4. migration/checkpointer 정리
