@@ -56,6 +56,10 @@ class Repository:
         stmt = select(AgentModel).where(AgentModel.team_id == team_id).order_by(AgentModel.agent_id)
         return list(self.session.scalars(stmt))
 
+    def list_all_agents(self) -> list[AgentModel]:
+        stmt = select(AgentModel).order_by(AgentModel.agent_id)
+        return list(self.session.scalars(stmt))
+
     def get_agent(self, agent_id: str) -> AgentModel | None:
         return self.session.get(AgentModel, agent_id)
 
@@ -86,6 +90,10 @@ class Repository:
         stmt = select(RunModel).where(RunModel.team_id == team_id).order_by(RunModel.created_at.desc())
         return list(self.session.scalars(stmt))
 
+    def list_all_runs(self) -> list[RunModel]:
+        stmt = select(RunModel).order_by(RunModel.created_at.desc())
+        return list(self.session.scalars(stmt))
+
     def create_task(
         self,
         team_id: str,
@@ -111,6 +119,10 @@ class Repository:
 
     def list_run_tasks(self, run_id: str) -> list[TaskModel]:
         stmt = select(TaskModel).where(TaskModel.run_id == run_id).order_by(TaskModel.created_at.asc())
+        return list(self.session.scalars(stmt))
+
+    def list_all_tasks(self) -> list[TaskModel]:
+        stmt = select(TaskModel).order_by(TaskModel.created_at.asc())
         return list(self.session.scalars(stmt))
 
     def assign_task(self, task: TaskModel, agent: AgentModel) -> TaskAssignmentModel:
@@ -202,6 +214,23 @@ class Repository:
         if run_id:
             stmt = stmt.where(EventModel.run_id == run_id)
         return list(self.session.scalars(stmt))
+
+    def latest_event(
+        self,
+        *,
+        event_type: str | None = None,
+        agent_id: str | None = None,
+        task_id: str | None = None,
+    ) -> EventModel | None:
+        stmt = select(EventModel)
+        if event_type:
+            stmt = stmt.where(EventModel.event_type == event_type)
+        if agent_id:
+            stmt = stmt.where(EventModel.agent_id == agent_id)
+        if task_id:
+            stmt = stmt.where(EventModel.task_id == task_id)
+        stmt = stmt.order_by(EventModel.created_at.desc(), EventModel.event_id.desc())
+        return self.session.scalars(stmt).first()
 
     def mark_run_status(self, run: RunModel, status: RunStatus, final_response: str | None = None) -> RunModel:
         run.status = status.value

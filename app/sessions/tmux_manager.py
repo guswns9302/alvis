@@ -31,7 +31,7 @@ class TmuxManager:
             return session_name
         self._run(["tmux", "new-session", "-d", "-s", session_name, "-n", "leader"])
         for _ in range(max(pane_count - 1, 0)):
-            self._run(["tmux", "split-window", "-t", session_name, "-h"])
+            self._run(["tmux", "split-window", "-d", "-t", f"{session_name}:0", "-h"])
         self._run(["tmux", "select-layout", "-t", session_name, "tiled"])
         return session_name
 
@@ -62,12 +62,22 @@ class TmuxManager:
     def focus_pane(self, pane_id: str) -> None:
         self._run(["tmux", "select-pane", "-t", pane_id])
 
+    def pipe_pane_to_file(self, pane_id: str, log_path: Path) -> None:
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        self._run(["tmux", "pipe-pane", "-o", "-t", pane_id, f"cat >> {log_path}"])
+
     def capture_debug_snapshot(self, pane_id: str, lines: int = 200) -> str:
         result = self._run(
             ["tmux", "capture-pane", "-t", pane_id, "-p", f"-S-{lines}"],
             check=False,
         )
         return result.stdout
+
+    def pane_exists(self, pane_id: str) -> bool:
+        result = self._run(["tmux", "list-panes", "-a", "-F", "#{pane_id}"], check=False)
+        if result.returncode != 0:
+            return False
+        return pane_id in {line.strip() for line in result.stdout.splitlines()}
 
     def attach(self, session_name: str) -> int:
         if not self.is_available():

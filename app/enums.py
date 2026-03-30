@@ -44,12 +44,17 @@ class RunStatus(StrEnum):
 
 
 class EventType(StrEnum):
+    TEAM_CREATED = "team.created"
     RUN_CREATED = "run.created"
+    RUN_RESUMED = "run.resumed"
+    REPLAN_REQUESTED = "replan.requested"
+    REPLAN_GENERATED = "replan.generated"
     TASK_CREATED = "task.created"
     TASK_ASSIGNED = "task.assigned"
     AGENT_PROMPT_SENT = "agent.prompt.sent"
     AGENT_OUTPUT_DELTA = "agent.output.delta"
     AGENT_OUTPUT_FINAL = "agent.output.final"
+    AGENT_HEARTBEAT = "agent.heartbeat"
     AGENT_STATUS_CHANGED = "agent.status.changed"
     REVIEW_REQUESTED = "review.requested"
     REVIEW_APPROVED = "review.approved"

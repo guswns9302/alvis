@@ -13,18 +13,22 @@ def main() -> int:
     parser.add_argument("--cwd", required=True)
     parser.add_argument("--codex-command", default="codex")
     parser.add_argument("--heartbeat-file", required=True)
+    parser.add_argument("--stderr-file", required=True)
     args = parser.parse_args()
 
     heartbeat_file = Path(args.heartbeat_file)
     heartbeat_file.parent.mkdir(parents=True, exist_ok=True)
+    stderr_file = Path(args.stderr_file)
+    stderr_file.parent.mkdir(parents=True, exist_ok=True)
     print("[ALVIS SESSION START]", flush=True)
-    process = subprocess.Popen([args.codex_command], cwd=args.cwd)
-    try:
-        while process.poll() is None:
-            heartbeat_file.write_text(json.dumps({"heartbeat_at": time.time()}))
-            time.sleep(5)
-    finally:
-        print("[ALVIS SESSION EXIT]", flush=True)
+    with stderr_file.open("a") as stderr_handle:
+        process = subprocess.Popen([args.codex_command], cwd=args.cwd, stderr=stderr_handle)
+        try:
+            while process.poll() is None:
+                heartbeat_file.write_text(json.dumps({"heartbeat_at": time.time()}))
+                time.sleep(5)
+        finally:
+            print("[ALVIS SESSION EXIT]", flush=True)
     return process.returncode or 0
 
 

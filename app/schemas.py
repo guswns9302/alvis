@@ -52,6 +52,16 @@ class TaskSummary(BaseModel):
     review_required: bool = False
 
 
+class AgentOutput(BaseModel):
+    task_id: str | None = None
+    agent_id: str
+    kind: str
+    summary: str
+    changed_files: list[str] = Field(default_factory=list)
+    test_results: list[str] = Field(default_factory=list)
+    risk_flags: list[str] = Field(default_factory=list)
+
+
 class ReviewSummary(BaseModel):
     review_id: str
     run_id: str
@@ -61,6 +71,14 @@ class ReviewSummary(BaseModel):
     summary: str
     created_at: datetime
     resolved_at: datetime | None = None
+
+
+class ReplanResult(BaseModel):
+    review_id: str
+    parent_task_id: str
+    new_task_id: str
+    assigned_agent_id: str
+    reason: str
 
 
 class RunSummary(BaseModel):

@@ -12,11 +12,11 @@
 ## Quick Start
 
 ```bash
-python -m venv .venv
+./scripts/bootstrap.sh
 source .venv/bin/activate
-pip install -e ".[dev]"
 alvis team create demo --workers 2
 alvis team start demo
+alvis collect-outputs demo
 alvis run demo "Investigate flaky tests in billing"
 alvis status demo
 ```

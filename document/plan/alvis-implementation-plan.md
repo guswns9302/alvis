@@ -25,6 +25,10 @@
 - [x] `README.md` 작성
 - [x] 설정 로더 작성
 - [x] 로깅 초기화 작성
+- [x] 환경 자동 설치 스크립트 작성
+- [x] 로컬 `.venv` 기반 bootstrap 경로 정리
+- [x] `tmux` 설치 및 로컬 실행 환경 검증
+- [x] Python 의존성 설치 및 import 검증
 
 ### Phase 2. 저장소와 도메인 모델
 
@@ -44,8 +48,8 @@
 - [x] pane snapshot 기능 작성
 - [x] Codex adapter 작성
 - [x] task prompt contract 구현
-- [ ] Codex stdout/stderr 구조화 수집기 구현
-- [ ] heartbeat 파일 기반 모니터 연결
+- [x] Codex stdout/stderr 구조화 수집기 초안 구현
+- [x] heartbeat 파일 기반 모니터 초안 연결
 
 ### Phase 4. 작업공간 격리
 
@@ -63,8 +67,8 @@
 - [x] agent selection 초안 작성
 - [x] dispatch 초안 작성
 - [x] review 생성 초안 작성
-- [ ] wait/update 루프 구현
-- [ ] 실제 Codex 출력 기반 상태 전이 구현
+- [x] wait/update 루프 초안 구현
+- [x] 실제 Codex 출력 기반 상태 전이 초안 구현
 - [ ] interrupt/resume 정교화
 
 ### Phase 6. Review Gate
@@ -72,8 +76,8 @@
 - [x] review gate 규칙 초안 구현
 - [x] review 저장 모델 구현
 - [x] approve/reject CLI 구현
-- [ ] review reject 후 재계획 연결
-- [ ] review approve 후 후속 단계 연결
+- [x] review reject 후 재계획 연결
+- [x] review approve 후 run resume 초안 연결
 
 ### Phase 7. CLI/API
 
@@ -87,6 +91,8 @@
 - [x] `alvis logs`
 - [x] `alvis recover`
 - [x] `alvis tmux-attach`
+- [x] `alvis bootstrap`
+- [x] `alvis collect-outputs`
 - [x] 최소 FastAPI surface 작성
 - [ ] CLI 출력 포맷 개선
 
@@ -94,8 +100,8 @@
 
 - [x] stalled agent 탐지 초안
 - [x] recover 명령 초안
-- [ ] tmux pane과 실제 프로세스 상태 reconciliation
-- [ ] orphaned task 자동 정정
+- [x] tmux pane과 실제 프로세스 상태 reconciliation 초안
+- [x] orphaned task 자동 정정 초안
 - [ ] retry 정책 구현
 
 ### Phase 9. 테스트와 검증
@@ -103,6 +109,10 @@
 - [x] review gate 단위 테스트
 - [x] task prompt 단위 테스트
 - [x] supervisor 기본 테스트
+- [x] output collector 단위 테스트
+- [x] CLI smoke test
+- [x] review approve 후 run 완료 smoke test
+- [x] recovery reconciliation 테스트
 - [ ] repository 테스트 확장
 - [ ] tmux manager 테스트 또는 mock 기반 테스트
 - [ ] e2e 시나리오 테스트
@@ -111,12 +121,11 @@
 
 다음 항목은 실제 운영 가능한 수준으로 가기 위해 우선적으로 마무리해야 한다.
 
-1. Codex 출력 수집과 이벤트 반영
-2. heartbeat 수집 및 stalled 판정 고도화
-3. LangGraph interrupt/resume 정교화
-4. review 결과와 supervisor 재계획 연결
-5. recovery 시 task/session 상태 reconciliation
-6. 테스트 확장
+1. LangGraph interrupt/resume 정교화
+2. output collector 품질 고도화
+3. 테스트 확장
+4. CLI 출력 개선
+5. migration/checkpointer 정리
 
 ## 4. 운영 기준
 
@@ -130,8 +139,8 @@
 
 가장 먼저 이어서 구현할 항목은 다음 순서로 진행한다.
 
-1. Codex wrapper와 output collector 고도화
-2. supervisor의 wait/evaluate 루프 보강
-3. review 승인 후 run 재개 흐름 구현
-4. recovery와 reconciliation 보강
-5. 통합 테스트 추가
+1. repository/tmux 통합 테스트 추가
+2. output collector 품질 고도화
+3. CLI 출력 개선
+4. LangGraph interrupt/resume 정교화
+5. migration/checkpointer 정리

@@ -1,11 +1,11 @@
 from app.schemas import TaskContract
-from app.sessions.tmux_manager import TmuxManager
 from app.agents.codex_adapter import CodexAdapter
+from app.sessions.tmux_manager import TmuxManager
 from pathlib import Path
 
 
 def test_task_prompt_contains_contract_fields():
-    adapter = CodexAdapter(TmuxManager("alvis"), "codex", Path("/tmp"))
+    adapter = CodexAdapter(TmuxManager("alvis"), "codex", Path("/tmp"), Path("/tmp"), Path("/tmp"))
     prompt = adapter.build_task_prompt(
         TaskContract(
             task_id="task-1",

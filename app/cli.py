@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import subprocess
 
 import typer
 import uvicorn
@@ -20,6 +21,12 @@ app.add_typer(review_app, name="review")
 def _services():
     configure_logging()
     return bootstrap_services()
+
+
+@app.command()
+def bootstrap():
+    configure_logging()
+    subprocess.run(["bash", "scripts/bootstrap.sh"], check=True)
 
 
 @team_app.command("create")
@@ -77,11 +84,24 @@ def approve_review(review_id: str):
 
 
 @review_app.command("reject")
-def reject_review(review_id: str):
+def reject_review(review_id: str, reason: str = "Rejected review requires follow-up task."):
     services = _services()
-    review = services.resolve_review(review_id, approved=False)
+    review = services.resolve_review(review_id, approved=False, reason=reason)
     if not review:
         raise typer.Exit(code=1)
+    replan = services.latest_replan_for_review(review.review_id)
+    if replan:
+        typer.echo(
+            json.dumps(
+                {
+                    "review_id": review.review_id,
+                    "status": review.status,
+                    "replan": replan,
+                },
+                indent=2,
+            )
+        )
+        return
     typer.echo(f"rejected {review.review_id}")
 
 
@@ -101,10 +121,16 @@ def logs(team_id: str, run_id: str | None = None):
     typer.echo(json.dumps(data, indent=2))
 
 
-@app.command()
-def recover():
+@app.command("collect-outputs")
+def collect_outputs(team_id: str):
     services = _services()
-    typer.echo(json.dumps(services.recover(), indent=2))
+    typer.echo(json.dumps(services.collect_outputs(team_id), indent=2))
+
+
+@app.command()
+def recover(team_id: str | None = None):
+    services = _services()
+    typer.echo(json.dumps(services.recover(team_id=team_id), indent=2))
 
 
 @app.command("tmux-attach")
