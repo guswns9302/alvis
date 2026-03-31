@@ -1,4 +1,4 @@
-from app.cli_formatters import format_cleanup, format_logs, format_status
+from app.cli_formatters import format_cleanup, format_logs, format_recover, format_status, format_team_create, format_team_start
 
 
 def test_format_status_renders_core_sections():
@@ -6,7 +6,22 @@ def test_format_status_renders_core_sections():
         {
             "team_id": "demo",
             "session_name": "alvis-demo",
-            "agents": [{"agent_id": "demo-worker-1", "role": "implementer", "status": "running", "pane": "%1", "task": "task-1"}],
+            "agents": [
+                {
+                    "agent_id": "demo-worker-1",
+                    "role": "implementer",
+                    "role_alias": "builder",
+                    "status": "running",
+                    "pane": "%1",
+                    "task": "task-1",
+                    "runtime_health": {
+                        "status": "exited",
+                        "ready": False,
+                        "error_summary": "Codex가 전역 npm 업데이트를 시도했지만 권한 오류(EACCES)로 종료되었습니다.",
+                        "error_hint": "터미널에서 `codex`를 직접 실행해 업데이트 프롬프트를 넘기거나 권한 문제를 해결한 뒤 다시 시도하세요.",
+                    },
+                }
+            ],
             "latest_run": {
                 "run_id": "run-1",
                 "status": "running",
@@ -14,15 +29,43 @@ def test_format_status_renders_core_sections():
                 "final_response": None,
                 "checkpoint": {"thread_id": "run-1", "next_node": "wait_for_updates"},
             },
-            "tasks": [{"task_id": "task-1", "title": "Implement", "status": "running", "agent_id": "demo-worker-1", "result_summary": None}],
+            "tasks": [{"task_id": "task-1", "title": "Implement", "goal": "fix bug", "target_role_alias": "builder", "owned_paths": ["src/app.py"], "status": "running", "agent_id": "demo-worker-1", "result_summary": None}],
             "pending_reviews": [],
-            "runtime_issues": {"missing_panes": [], "stale_heartbeat": [], "orphaned_tasks": [], "dangling_runs": []},
+            "handoffs": [
+                {
+                    "task_id": "task-2",
+                    "parent_task_id": "task-1",
+                    "agent_id": "demo-worker-2",
+                    "title": "Validate and summarize",
+                    "status": "done",
+                    "target_role_alias": "checker",
+                }
+            ],
+            "final_output_candidate": {
+                "task_id": "task-2",
+                "agent_id": "demo-worker-2",
+                "summary": "validated output",
+            },
+            "final_output_ready": True,
+            "redo_tasks": [],
+            "runtime_issues": {
+                "missing_panes": [],
+                "stale_heartbeat": [],
+                "session_not_ready": [],
+                "session_exited": [],
+                "orphaned_tasks": [],
+                "dangling_runs": [],
+            },
         }
     )
-    assert "Team: demo" in text
-    assert "Latest run: run-1" in text
-    assert "Checkpoint: next=wait_for_updates thread=run-1" in text
-    assert "Agents:" in text
+    assert "팀: demo" in text
+    assert "최근 실행: run-1" in text
+    assert "체크포인트: next=wait_for_updates thread=run-1" in text
+    assert "에이전트:" in text
+    assert "자동 handoff:" in text
+    assert "validated output" in text
+    assert "ready=yes" in text
+    assert "권한 오류(EACCES)" in text
 
 
 def test_format_logs_prefers_event_summary():
@@ -44,10 +87,121 @@ def test_format_logs_prefers_event_summary():
 def test_format_cleanup_renders_counts():
     text = format_cleanup(
         {
-            "deleted_worktrees": [{"agent_id": "demo-worker-1"}],
-            "skipped_dirty_worktrees": [],
-            "skipped_active_worktrees": [{"agent_id": "demo-worker-2"}],
+            "deleted_runtime_dirs": [{"agent_id": "demo-worker-1"}],
+            "skipped_active_agents": [{"agent_id": "demo-worker-2"}],
         }
     )
-    assert "deleted_worktrees: 1" in text
-    assert "skipped_active_worktrees: 1" in text
+    assert "deleted_runtime_dirs: 1" in text
+    assert "skipped_active_agents: 1" in text
+
+
+def test_format_team_start_renders_session_issues():
+    text = format_team_start(
+        {
+            "team_id": "demo",
+            "session_name": "alvis-demo",
+            "panes": ["%1", "%2"],
+            "session_issues": [
+                {
+                    "agent_id": "demo-worker-1",
+                    "runtime_status": "exited",
+                    "error_summary": "Codex가 전역 npm 업데이트를 시도했지만 권한 오류(EACCES)로 종료되었습니다.",
+                    "error_hint": "터미널에서 `codex`를 직접 실행해 업데이트 프롬프트를 넘기거나 권한 문제를 해결한 뒤 다시 시도하세요.",
+                }
+            ],
+        }
+    )
+    assert "세션 경고:" in text
+    assert "demo-worker-1" in text
+    assert "권한 오류(EACCES)" in text
+
+
+def test_format_status_renders_handoff_details():
+    text = format_status(
+        {
+            "team_id": "demo",
+            "session_name": "alvis-demo",
+            "agents": [],
+            "latest_run": None,
+            "tasks": [],
+            "handoffs": [
+                {
+                    "task_id": "task-2",
+                    "parent_task_id": "task-1",
+                    "agent_id": "demo-worker-2",
+                    "status": "done",
+                    "target_role_alias": "checker",
+                }
+            ],
+            "final_output_candidate": None,
+            "final_output_ready": False,
+            "redo_tasks": [
+                {
+                    "task_id": "task-3",
+                    "parent_task_id": "task-2",
+                    "agent_id": "demo-worker-1",
+                    "status": "running",
+                    "target_role_alias": "builder",
+                }
+            ],
+            "runtime_issues": {
+                "missing_panes": [],
+                "stale_heartbeat": [],
+                "session_not_ready": [],
+                "session_exited": [],
+                "orphaned_tasks": [],
+                "dangling_runs": [],
+            },
+        }
+    )
+    assert "parent=task-1" in text
+    assert "role=checker" in text
+    assert "재작업 작업:" in text
+
+
+def test_format_team_create_renders_workers_and_start_result():
+    text = format_team_create(
+        {
+            "team_id": "demo",
+            "workers": [
+                {"agent_id": "demo-worker-1", "role": "implementer", "role_alias": "backend"},
+                {"agent_id": "demo-worker-2", "role": "reviewer", "role_alias": "test"},
+            ],
+            "start_result": {
+                "team_id": "demo",
+                "session_name": "alvis-demo",
+                "panes": ["%1", "%2", "%3"],
+                "session_issues": [],
+            },
+        }
+    )
+    assert "팀 생성됨: demo" in text
+    assert "demo-worker-1 role=implementer alias=backend" in text
+    assert "팀 시작됨: demo" in text
+
+
+def test_format_recover_renders_session_errors():
+    text = format_recover(
+        {
+            "missing_panes": [],
+            "stale_heartbeat": [],
+            "session_not_ready": [],
+            "session_exited": ["demo-worker-1"],
+            "orphaned_tasks": [],
+            "orphaned_reviews": [],
+            "dangling_runs": [],
+            "reconciled_runs": [],
+            "scope_conflicts": [],
+            "cleanup_candidates": [],
+            "actions_taken": [],
+            "session_errors": [
+                {
+                    "agent_id": "demo-worker-1",
+                    "error_summary": "Codex가 전역 npm 업데이트를 시도했지만 권한 오류(EACCES)로 종료되었습니다.",
+                    "error_hint": "터미널에서 `codex`를 직접 실행해 업데이트 프롬프트를 넘기거나 권한 문제를 해결한 뒤 다시 시도하세요.",
+                }
+            ],
+        }
+    )
+    assert "감지된 세션 오류:" in text
+    assert "demo-worker-1" in text

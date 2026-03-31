@@ -6,10 +6,14 @@ from typing import TypedDict
 class TaskState(TypedDict, total=False):
     task_id: str
     agent_id: str
+    task_type: str
+    parent_task_id: str | None
     title: str
     goal: str
     status: str
     review_required: bool
+    target_role_alias: str | None
+    owned_paths: list[str]
 
 
 class ReviewState(TypedDict, total=False):
@@ -18,6 +22,17 @@ class ReviewState(TypedDict, total=False):
     agent_id: str
     status: str
     summary: str
+
+
+class InteractionState(TypedDict, total=False):
+    interaction_id: str
+    task_id: str | None
+    source_agent_id: str | None
+    target_agent_id: str | None
+    target_role_alias: str | None
+    kind: str
+    status: str
+    payload: dict
 
 
 class AlvisRunState(TypedDict, total=False):
@@ -30,5 +45,9 @@ class AlvisRunState(TypedDict, total=False):
     completed_tasks: list[TaskState]
     blocked_tasks: list[TaskState]
     review_requests: list[ReviewState]
+    handoffs: list[dict]
+    pending_interactions: list[InteractionState]
+    final_output_candidate: dict | None
+    final_output_ready: bool
     final_response: str | None
     status: str

@@ -5,6 +5,7 @@ class AgentRole(StrEnum):
     LEADER = "leader"
     IMPLEMENTER = "implementer"
     REVIEWER = "reviewer"
+    ANALYST = "analyst"
 
 
 class AgentStatus(StrEnum):
@@ -22,6 +23,7 @@ class TaskStatus(StrEnum):
     CREATED = "created"
     ASSIGNED = "assigned"
     RUNNING = "running"
+    WAITING_INPUT = "waiting_input"
     WAITING_REVIEW = "waiting_review"
     BLOCKED = "blocked"
     DONE = "done"
@@ -43,6 +45,12 @@ class RunStatus(StrEnum):
     FAILED = "failed"
 
 
+class InteractionStatus(StrEnum):
+    PENDING = "pending"
+    ROUTED = "routed"
+    RESOLVED = "resolved"
+
+
 class EventType(StrEnum):
     TEAM_CREATED = "team.created"
     RUN_CREATED = "run.created"
@@ -52,6 +60,9 @@ class EventType(StrEnum):
     REPLAN_GENERATED = "replan.generated"
     TASK_CREATED = "task.created"
     TASK_ASSIGNED = "task.assigned"
+    TASK_HANDOFF_CREATED = "task.handoff.created"
+    TASK_HANDOFF_DISPATCHED = "task.handoff.dispatched"
+    TASK_HANDOFF_COMPLETED = "task.handoff.completed"
     TASK_RETRY_REQUESTED = "task.retry.requested"
     TASK_RETRY_SUCCEEDED = "task.retry.succeeded"
     TASK_RETRY_SKIPPED = "task.retry.skipped"
@@ -63,6 +74,12 @@ class EventType(StrEnum):
     REVIEW_REQUESTED = "review.requested"
     REVIEW_APPROVED = "review.approved"
     REVIEW_REJECTED = "review.rejected"
+    INTERACTION_CREATED = "interaction.created"
+    INTERACTION_ROUTED = "interaction.routed"
+    INTERACTION_RESOLVED = "interaction.resolved"
+    LEADER_PROMPT_SENT = "leader.prompt.sent"
+    LEADER_INSTRUCTION_CREATED = "leader.instruction.created"
+    LEADER_OUTPUT_READY = "leader.output.ready"
     SESSION_STARTED = "session.started"
     SESSION_EXITED = "session.exited"
     ERROR_RAISED = "error.raised"

@@ -6,7 +6,7 @@ from sqlalchemy import JSON, Boolean, DateTime, ForeignKey, Integer, String, Tex
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.base import Base
-from app.enums import AgentRole, AgentStatus, ReviewStatus, RunStatus, TaskStatus
+from app.enums import AgentRole, AgentStatus, InteractionStatus, ReviewStatus, RunStatus, TaskStatus
 
 
 class TeamModel(Base):
@@ -25,6 +25,7 @@ class AgentModel(Base):
     agent_id: Mapped[str] = mapped_column(String, primary_key=True)
     team_id: Mapped[str] = mapped_column(ForeignKey("teams.team_id"), index=True)
     role: Mapped[str] = mapped_column(String, default=AgentRole.IMPLEMENTER.value)
+    role_alias: Mapped[str | None] = mapped_column(String, nullable=True)
     status: Mapped[str] = mapped_column(String, default=AgentStatus.IDLE.value)
     cwd: Mapped[str | None] = mapped_column(String, nullable=True)
     git_branch: Mapped[str | None] = mapped_column(String, nullable=True)
@@ -71,6 +72,10 @@ class TaskModel(Base):
     goal: Mapped[str] = mapped_column(Text)
     status: Mapped[str] = mapped_column(String, default=TaskStatus.CREATED.value)
     agent_id: Mapped[str | None] = mapped_column(ForeignKey("agents.agent_id"), nullable=True)
+    task_type: Mapped[str] = mapped_column(String, default="worker")
+    parent_task_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    target_role_alias: Mapped[str | None] = mapped_column(String, nullable=True)
+    owned_paths: Mapped[list[str]] = mapped_column(JSON, default=list)
     review_required: Mapped[bool] = mapped_column(Boolean, default=False)
     result_summary: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
@@ -113,6 +118,23 @@ class SessionModel(Base):
     status: Mapped[str] = mapped_column(String, default="started")
     started_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
     exited_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+
+class InteractionModel(Base):
+    __tablename__ = "interactions"
+
+    interaction_id: Mapped[str] = mapped_column(String, primary_key=True)
+    run_id: Mapped[str] = mapped_column(ForeignKey("runs.run_id"), index=True)
+    team_id: Mapped[str] = mapped_column(ForeignKey("teams.team_id"), index=True)
+    source_agent_id: Mapped[str | None] = mapped_column(ForeignKey("agents.agent_id"), nullable=True, index=True)
+    target_agent_id: Mapped[str | None] = mapped_column(ForeignKey("agents.agent_id"), nullable=True, index=True)
+    target_role_alias: Mapped[str | None] = mapped_column(String, nullable=True)
+    task_id: Mapped[str | None] = mapped_column(ForeignKey("tasks.task_id"), nullable=True, index=True)
+    kind: Mapped[str] = mapped_column(String)
+    status: Mapped[str] = mapped_column(String, default=InteractionStatus.PENDING.value, index=True)
+    payload: Mapped[dict] = mapped_column(JSON, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    resolved_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
 
 class EventModel(Base):

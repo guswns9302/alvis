@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session
 from app.db.models import (
     AgentModel,
     EventModel,
+    InteractionModel,
     ReviewRequestModel,
     RunModel,
     RunCheckpointModel,
@@ -17,7 +18,7 @@ from app.db.models import (
     TaskModel,
     TeamModel,
 )
-from app.enums import AgentRole, AgentStatus, ReviewStatus, RunStatus, TaskStatus
+from app.enums import AgentRole, AgentStatus, InteractionStatus, ReviewStatus, RunStatus, TaskStatus
 
 
 def utcnow() -> datetime:
@@ -28,22 +29,29 @@ class Repository:
     def __init__(self, session: Session):
         self.session = session
 
-    def create_team(self, team_id: str, worker_count: int, session_name: str) -> TeamModel:
+    def create_team(
+        self,
+        team_id: str,
+        session_name: str,
+        worker_roles: list[tuple[AgentRole, str]],
+    ) -> TeamModel:
         team = TeamModel(team_id=team_id, session_name=session_name)
         self.session.add(team)
         leader = AgentModel(
             agent_id=f"{team_id}-leader",
             team_id=team_id,
             role=AgentRole.LEADER.value,
+            role_alias="leader",
             status=AgentStatus.IDLE.value,
         )
         self.session.add(leader)
-        for idx in range(worker_count):
+        for idx, (base_role, role_alias) in enumerate(worker_roles, start=1):
             self.session.add(
                 AgentModel(
-                    agent_id=f"{team_id}-worker-{idx + 1}",
+                    agent_id=f"{team_id}-worker-{idx}",
                     team_id=team_id,
-                    role=AgentRole.IMPLEMENTER.value,
+                    role=base_role.value,
+                    role_alias=role_alias,
                     status=AgentStatus.IDLE.value,
                 )
             )
@@ -105,6 +113,10 @@ class Repository:
         title: str,
         goal: str,
         review_required: bool = False,
+        target_role_alias: str | None = None,
+        owned_paths: list[str] | None = None,
+        task_type: str = "worker",
+        parent_task_id: str | None = None,
     ) -> TaskModel:
         task = TaskModel(
             task_id=f"task-{uuid4().hex[:12]}",
@@ -112,7 +124,11 @@ class Repository:
             run_id=run_id,
             title=title,
             goal=goal,
+            task_type=task_type,
+            parent_task_id=parent_task_id,
             review_required=review_required,
+            target_role_alias=target_role_alias,
+            owned_paths=owned_paths or [],
             status=TaskStatus.CREATED.value,
             created_at=utcnow(),
             updated_at=utcnow(),
@@ -120,6 +136,62 @@ class Repository:
         self.session.add(task)
         self.session.flush()
         return task
+
+    def create_interaction(
+        self,
+        *,
+        run_id: str,
+        team_id: str,
+        kind: str,
+        payload: dict,
+        source_agent_id: str | None = None,
+        target_agent_id: str | None = None,
+        target_role_alias: str | None = None,
+        task_id: str | None = None,
+        status: InteractionStatus = InteractionStatus.PENDING,
+    ) -> InteractionModel:
+        interaction = InteractionModel(
+            interaction_id=f"interaction-{uuid4().hex[:12]}",
+            run_id=run_id,
+            team_id=team_id,
+            source_agent_id=source_agent_id,
+            target_agent_id=target_agent_id,
+            target_role_alias=target_role_alias,
+            task_id=task_id,
+            kind=kind,
+            status=status.value,
+            payload=payload,
+            created_at=utcnow(),
+        )
+        self.session.add(interaction)
+        self.session.flush()
+        return interaction
+
+    def list_interactions(
+        self,
+        *,
+        team_id: str | None = None,
+        run_id: str | None = None,
+        status: InteractionStatus | None = None,
+    ) -> list[InteractionModel]:
+        stmt = select(InteractionModel).order_by(InteractionModel.created_at.asc())
+        if team_id:
+            stmt = stmt.where(InteractionModel.team_id == team_id)
+        if run_id:
+            stmt = stmt.where(InteractionModel.run_id == run_id)
+        if status:
+            stmt = stmt.where(InteractionModel.status == status.value)
+        return list(self.session.scalars(stmt))
+
+    def get_interaction(self, interaction_id: str) -> InteractionModel | None:
+        return self.session.get(InteractionModel, interaction_id)
+
+    def resolve_interaction(self, interaction: InteractionModel, *, status: InteractionStatus = InteractionStatus.RESOLVED) -> InteractionModel:
+        interaction.status = status.value
+        interaction.resolved_at = utcnow()
+        self.session.add(interaction)
+        self.session.flush()
+        return interaction
 
     def list_run_tasks(self, run_id: str) -> list[TaskModel]:
         stmt = select(TaskModel).where(TaskModel.run_id == run_id).order_by(TaskModel.created_at.asc())
@@ -281,3 +353,44 @@ class Repository:
             for agent in agents
             if agent.last_heartbeat_at and agent.last_heartbeat_at.timestamp() < cutoff
         ]
+
+    def delete_team(self, team_id: str) -> bool:
+        team = self.get_team(team_id)
+        if team is None:
+            return False
+
+        runs = self.list_team_runs(team_id)
+        run_ids = [run.run_id for run in runs]
+        tasks = [task for run_id in run_ids for task in self.list_run_tasks(run_id)]
+        task_ids = [task.task_id for task in tasks]
+
+        for review in list(self.list_reviews()):
+            if review.run_id in run_ids:
+                self.session.delete(review)
+
+        for assignment in list(self.session.scalars(select(TaskAssignmentModel))):
+            if assignment.task_id in task_ids:
+                self.session.delete(assignment)
+
+        for checkpoint in list(self.session.scalars(select(RunCheckpointModel))):
+            if checkpoint.run_id in run_ids:
+                self.session.delete(checkpoint)
+
+        for event in list(self.session.scalars(select(EventModel).where(EventModel.team_id == team_id))):
+            self.session.delete(event)
+
+        for session_row in list(self.session.scalars(select(SessionModel).where(SessionModel.team_id == team_id))):
+            self.session.delete(session_row)
+
+        for task in tasks:
+            self.session.delete(task)
+
+        for run in runs:
+            self.session.delete(run)
+
+        for agent in self.list_agents(team_id):
+            self.session.delete(agent)
+
+        self.session.delete(team)
+        self.session.flush()
+        return True

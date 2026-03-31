@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
+from pathlib import Path
 
 import typer
 import uvicorn
@@ -13,26 +15,74 @@ from app.cli_formatters import (
     format_logs,
     format_outputs,
     format_recover,
-    format_review_approval,
-    format_review_rejection,
-    format_reviews,
     format_run_state,
     format_status,
+    format_team_create,
+    format_team_remove,
     format_team_start,
 )
+from app.config import get_settings
+from app.daemon_client import DaemonClient, DaemonUnavailableError
 from app.graph.supervisor import Supervisor, SupervisorDeps
+from app.launchd import LaunchdManager
 from app.logging import configure_logging
+from app.upgrade import perform_upgrade
+from app.version import __version__
 
 app = typer.Typer(help="Alvis CLI")
 team_app = typer.Typer(help="Team management")
-review_app = typer.Typer(help="Review actions")
+daemon_app = typer.Typer(help="Daemon management")
 app.add_typer(team_app, name="team")
-app.add_typer(review_app, name="review")
+app.add_typer(daemon_app, name="daemon")
+
+ROLE_CHOICES = ["implementer", "reviewer", "analyst"]
 
 
-def _services():
+def _workspace_root() -> Path:
+    return Path(os.getenv("ALVIS_WORKSPACE_ROOT", Path.cwd())).expanduser().resolve()
+
+
+def _direct_mode() -> bool:
+    if os.getenv("ALVIS_DIRECT_MODE") == "1":
+        return True
+    return any(
+        os.getenv(name)
+        for name in (
+            "PYTEST_CURRENT_TEST",
+            "ALVIS_REPO_ROOT",
+            "ALVIS_DB_PATH",
+            "ALVIS_DATA_DIR",
+        )
+    )
+
+
+def _services(workspace_root: str | Path | None = None):
     configure_logging()
-    return bootstrap_services()
+    try:
+        return bootstrap_services(workspace_root or _workspace_root())
+    except RuntimeError as exc:
+        typer.secho(str(exc), fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=1) from exc
+
+
+def _daemon_client() -> DaemonClient:
+    return DaemonClient(get_settings(_workspace_root()))
+
+
+def _ensure_daemon_running() -> DaemonClient:
+    client = _daemon_client()
+    try:
+        client.health()
+        return client
+    except DaemonUnavailableError:
+        manager = LaunchdManager(get_settings(_workspace_root()))
+        try:
+            manager.start()
+            client.health()
+            return client
+        except Exception as exc:  # pragma: no cover - runtime only
+            typer.secho(f"failed to start alvis daemon: {exc}", fg=typer.colors.RED, err=True)
+            raise typer.Exit(code=1) from exc
 
 
 def _emit(data, json_output: bool, formatter) -> None:
@@ -42,113 +92,214 @@ def _emit(data, json_output: bool, formatter) -> None:
     typer.echo(formatter(data))
 
 
+def _prompt_text(label: str, default: str | None = None, *, err: bool = False) -> str:
+    if default is not None:
+        typer.echo(f"{label} [{default}]: ", nl=False, err=err)
+    else:
+        typer.echo(f"{label}: ", nl=False, err=err)
+    value = input()
+    if not value.strip() and default is not None:
+        return default
+    return value.strip()
+
+
+def _prompt_role(worker_label: str, *, err: bool = False) -> str:
+    typer.echo(f"{worker_label} 기본 역할을 선택하세요.", err=err)
+    for index, role in enumerate(ROLE_CHOICES, start=1):
+        typer.echo(f"  {index}. {role}", err=err)
+    selected_index = _prompt_text(f"{worker_label} 역할 번호", default="1", err=err)
+    try:
+        base_role = ROLE_CHOICES[int(selected_index) - 1]
+    except (ValueError, IndexError):
+        raise typer.BadParameter("역할 번호는 1, 2, 3 중 하나여야 합니다.")
+    alias = _prompt_text(f"{worker_label} 역할 별칭", default=base_role, err=err).strip() or base_role
+    return f"{base_role}:{alias}"
+
+
+def _create_team_payload(team_id: str, worker_1_role: str, worker_2_role: str) -> dict:
+    workers = [
+        {
+            "agent_id": f"{team_id}-worker-1",
+            "role": worker_1_role.split(":", 1)[0],
+            "role_alias": worker_1_role.split(":", 1)[1] if ":" in worker_1_role else worker_1_role,
+        },
+        {
+            "agent_id": f"{team_id}-worker-2",
+            "role": worker_2_role.split(":", 1)[0],
+            "role_alias": worker_2_role.split(":", 1)[1] if ":" in worker_2_role else worker_2_role,
+        },
+    ]
+    return {"team_id": team_id, "workers": workers}
+
+
 @app.command()
 def bootstrap():
     configure_logging()
     subprocess.run(["bash", "scripts/bootstrap.sh"], check=True)
 
 
+@app.command()
+def version(json_output: bool = typer.Option(False, "--json")):
+    _emit({"version": __version__}, json_output, lambda data: f"alvis {data['version']}")
+
+
+@app.command()
+def doctor(json_output: bool = typer.Option(False, "--json")):
+    settings = get_settings(_workspace_root())
+    client = _daemon_client()
+    try:
+        daemon = client.health()
+    except DaemonUnavailableError:
+        daemon = {"status": "unreachable"}
+    payload = {
+        "version": __version__,
+        "workspace_root": str(_workspace_root()),
+        "app_home": str(settings.app_home),
+        "data_dir": str(settings.data_dir),
+        "daemon": daemon,
+        "tmux_available": subprocess.run(["which", "tmux"], check=False, capture_output=True, text=True).returncode == 0,
+        "codex_available": subprocess.run(["which", "codex"], check=False, capture_output=True, text=True).returncode == 0,
+    }
+    _emit(
+        payload,
+        json_output,
+        lambda data: "\n".join(
+            [
+                f"alvis {data['version']}",
+                f"workspace: {data['workspace_root']}",
+                f"app_home: {data['app_home']}",
+                f"data_dir: {data['data_dir']}",
+                f"daemon: {data['daemon'].get('status', 'unknown')}",
+                f"tmux: {'ok' if data['tmux_available'] else 'missing'}",
+                f"codex: {'ok' if data['codex_available'] else 'missing'}",
+            ]
+        ),
+    )
+
+
 @team_app.command("create")
-def create_team(team_id: str, workers: int = 2):
-    services = _services()
-    team = services.create_team(team_id, workers)
-    typer.echo(f"created team {team.team_id}")
+def create_team(
+    team_id: str | None = typer.Argument(None),
+    worker_1_role: str | None = typer.Option(None, "--worker-1-role"),
+    worker_2_role: str | None = typer.Option(None, "--worker-2-role"),
+    json_output: bool = typer.Option(False, "--json"),
+    no_attach: bool = typer.Option(False, "--no-attach"),
+):
+    try:
+        prompt_to_stderr = json_output
+        resolved_team_id = team_id or _prompt_text("팀 이름", err=prompt_to_stderr).strip()
+        if not resolved_team_id:
+            raise typer.BadParameter("팀 이름은 비어 있을 수 없습니다.")
+        resolved_worker_1_role = worker_1_role or _prompt_role("워커 1", err=prompt_to_stderr)
+        resolved_worker_2_role = worker_2_role or _prompt_role("워커 2", err=prompt_to_stderr)
+        payload = _create_team_payload(resolved_team_id, resolved_worker_1_role, resolved_worker_2_role)
+        if _direct_mode():
+            services = _services()
+            team = services.create_team(resolved_team_id, resolved_worker_1_role, resolved_worker_2_role)
+            payload["team_id"] = team.team_id
+            payload["start_result"] = services.start_team(resolved_team_id)
+        else:
+            client = _ensure_daemon_running()
+            payload = client.request_json(
+                "POST",
+                "/teams/create",
+                payload={
+                    **client.with_workspace(_workspace_root()),
+                    "team_id": resolved_team_id,
+                    "worker_1_role": resolved_worker_1_role,
+                    "worker_2_role": resolved_worker_2_role,
+                },
+            )
+        _emit(payload, json_output, format_team_create)
+        start_result = payload.get("start_result", {})
+        if not no_attach and not json_output and start_result.get("all_ready"):
+            raise typer.Exit(code=_services().attach_tmux(resolved_team_id))
+        if not no_attach and not start_result.get("all_ready"):
+            raise typer.Exit(code=1)
+    except ValueError as exc:
+        typer.secho(str(exc), fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=1) from exc
 
 
 @team_app.command("start")
 def start_team(team_id: str, json_output: bool = typer.Option(False, "--json")):
-    services = _services()
-    result = services.start_team(team_id)
+    if _direct_mode():
+        result = _services().start_team(team_id)
+    else:
+        client = _ensure_daemon_running()
+        result = client.request_json("POST", "/teams/start", payload={**client.with_workspace(_workspace_root()), "team_id": team_id})
     _emit(result, json_output, format_team_start)
+
+
+@team_app.command("remove")
+def remove_team(team_id: str, json_output: bool = typer.Option(False, "--json")):
+    try:
+        if _direct_mode():
+            result = _services().remove_team(team_id)
+        else:
+            client = _ensure_daemon_running()
+            result = client.request_json("POST", "/teams/remove", payload={**client.with_workspace(_workspace_root()), "team_id": team_id})
+        _emit(result, json_output, format_team_remove)
+    except ValueError as exc:
+        typer.secho(str(exc), fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=1) from exc
 
 
 @app.command()
 def run(team_id: str, request: str, json_output: bool = typer.Option(False, "--json")):
-    services = _services()
-    supervisor = Supervisor(SupervisorDeps(services=services))
-    state = supervisor.run(team_id, request)
+    if _direct_mode():
+        services = _services()
+        supervisor = Supervisor(SupervisorDeps(services=services))
+        state = supervisor.run(team_id, request)
+    else:
+        client = _ensure_daemon_running()
+        state = client.request_json("POST", "/runs", payload={**client.with_workspace(_workspace_root()), "team_id": team_id, "request": request})
     _emit(state, json_output, format_run_state)
 
 
 @app.command()
 def resume(run_id: str, json_output: bool = typer.Option(False, "--json")):
-    services = _services()
-    supervisor = Supervisor(SupervisorDeps(services=services))
-    state = supervisor.resume(run_id)
+    if _direct_mode():
+        services = _services()
+        supervisor = Supervisor(SupervisorDeps(services=services))
+        state = supervisor.resume(run_id)
+    else:
+        client = _ensure_daemon_running()
+        state = client.request_json("POST", f"/runs/{run_id}/resume", payload=client.with_workspace(_workspace_root()))
     _emit(state, json_output, format_run_state)
 
 
 @app.command()
 def status(team_id: str, json_output: bool = typer.Option(False, "--json")):
-    services = _services()
-    _emit(services.status(team_id), json_output, format_status)
-
-
-@review_app.command("list")
-def list_reviews(json_output: bool = typer.Option(False, "--json")):
-    services = _services()
-    data = [
-        {
-            "review_id": review.review_id,
-            "run_id": review.run_id,
-            "task_id": review.task_id,
-            "agent_id": review.agent_id,
-            "status": review.status,
-            "summary": review.summary,
-        }
-        for review in services.list_reviews()
-    ]
-    _emit(data, json_output, format_reviews)
-
-
-@review_app.command("approve")
-def approve_review(review_id: str, json_output: bool = typer.Option(False, "--json")):
-    services = _services()
-    review = services.resolve_review(review_id, approved=True)
-    if not review:
-        raise typer.Exit(code=1)
-    supervisor = Supervisor(SupervisorDeps(services=services))
-    state = supervisor.resume(review.run_id)
-    payload = {"review_id": review.review_id, "status": review.status, "run_state": state}
-    _emit(payload, json_output, format_review_approval)
-
-
-@review_app.command("reject")
-def reject_review(
-    review_id: str,
-    reason: str = "Rejected review requires follow-up task.",
-    json_output: bool = typer.Option(False, "--json"),
-):
-    services = _services()
-    review = services.resolve_review(review_id, approved=False, reason=reason)
-    if not review:
-        raise typer.Exit(code=1)
-    replan = services.latest_replan_for_review(review.review_id)
-    if replan:
-        payload = {
-            "review_id": review.review_id,
-            "status": review.status,
-            "replan": replan,
-        }
-        _emit(payload, json_output, format_review_rejection)
-        return
-    payload = {"review_id": review.review_id, "status": review.status}
-    _emit(payload, json_output, format_review_rejection)
+    try:
+        if _direct_mode():
+            result = _services().status(team_id)
+        else:
+            client = _ensure_daemon_running()
+            result = client.request_json("GET", "/status", query={**client.with_workspace(_workspace_root()), "team_id": team_id})
+        _emit(result, json_output, format_status)
+    except ValueError as exc:
+        typer.secho(str(exc), fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=1) from exc
 
 
 @app.command()
 def logs(team_id: str, run_id: str | None = None, json_output: bool = typer.Option(False, "--json")):
-    services = _services()
-    data = [
-        {
-            "event_id": event.event_id,
-            "event_type": event.event_type,
-            "agent_id": event.agent_id,
-            "task_id": event.task_id,
-            "payload": event.payload,
-        }
-        for event in services.list_events(team_id=team_id, run_id=run_id)
-    ]
+    if _direct_mode():
+        services = _services()
+        data = [
+            {
+                "event_id": event.event_id,
+                "event_type": event.event_type,
+                "agent_id": event.agent_id,
+                "task_id": event.task_id,
+                "payload": event.payload,
+            }
+            for event in services.list_events(team_id=team_id, run_id=run_id)
+        ]
+    else:
+        client = _ensure_daemon_running()
+        data = client.request_json("GET", "/logs", query={**client.with_workspace(_workspace_root()), "team_id": team_id, "run_id": run_id})
     _emit(data, json_output, format_logs)
 
 
@@ -164,20 +315,68 @@ def recover(
     retry: bool = typer.Option(False, "--retry"),
     json_output: bool = typer.Option(False, "--json"),
 ):
-    services = _services()
-    _emit(services.recover(team_id=team_id, retry=retry), json_output, format_recover)
+    if _direct_mode():
+        result = _services().recover(team_id=team_id, retry=retry)
+    else:
+        client = _ensure_daemon_running()
+        result = client.request_json("POST", "/recover", payload={**client.with_workspace(_workspace_root()), "team_id": team_id, "retry": retry})
+    _emit(result, json_output, format_recover)
 
 
 @app.command()
 def cleanup(team_id: str | None = typer.Option(None, "--team-id"), json_output: bool = typer.Option(False, "--json")):
-    services = _services()
-    _emit(services.cleanup_worktrees(team_id=team_id), json_output, format_cleanup)
+    if _direct_mode():
+        result = _services().cleanup_worktrees(team_id=team_id)
+    else:
+        client = _ensure_daemon_running()
+        result = client.request_json("POST", "/cleanup", payload={**client.with_workspace(_workspace_root()), "team_id": team_id})
+    _emit(result, json_output, format_cleanup)
 
 
 @app.command("tmux-attach")
 def tmux_attach(team_id: str):
     services = _services()
     raise typer.Exit(code=services.attach_tmux(team_id))
+
+
+@app.command()
+def upgrade(version: str | None = typer.Option(None, "--version"), json_output: bool = typer.Option(False, "--json")):
+    result = perform_upgrade(get_settings(_workspace_root()), version)
+    _emit(
+        result,
+        json_output,
+        lambda data: "\n".join(
+            [
+                f"status: {data['status']}",
+                f"current_version: {data['current_version']}",
+                f"target_version: {data['target_version']}",
+            ]
+        ),
+    )
+
+
+@daemon_app.command("status")
+def daemon_status(json_output: bool = typer.Option(False, "--json")):
+    payload = LaunchdManager(get_settings(_workspace_root())).status()
+    _emit(payload, json_output, lambda data: f"label: {data['label']}\nrunning: {data['running']}")
+
+
+@daemon_app.command("start")
+def daemon_start(json_output: bool = typer.Option(False, "--json")):
+    payload = LaunchdManager(get_settings(_workspace_root())).start()
+    _emit(payload, json_output, lambda data: f"label: {data['label']}\nstatus: {data['status']}")
+
+
+@daemon_app.command("stop")
+def daemon_stop(json_output: bool = typer.Option(False, "--json")):
+    payload = LaunchdManager(get_settings(_workspace_root())).stop()
+    _emit(payload, json_output, lambda data: f"label: {data['label']}\nstatus: {data['status']}")
+
+
+@daemon_app.command("restart")
+def daemon_restart(json_output: bool = typer.Option(False, "--json")):
+    payload = LaunchdManager(get_settings(_workspace_root())).restart()
+    _emit(payload, json_output, lambda data: f"label: {data['label']}\nstatus: {data['status']}")
 
 
 @app.command()

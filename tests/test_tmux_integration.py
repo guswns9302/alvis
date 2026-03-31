@@ -82,8 +82,8 @@ def test_pipe_pane_writes_to_log_file(tmp_path):
 def test_recover_marks_missing_pane_with_real_tmux(tmp_path):
     services = create_test_services(tmp_path)
     team_id = f"recover-real-{uuid4().hex[:6]}"
-    services.create_team(team_id, 1)
-    session_name = services.tmux.create_team_layout(team_id, 2)
+    services.create_team(team_id, "implementer:builder", "reviewer:checker")
+    session_name = services.tmux.create_team_layout(team_id, 3)
     panes = services.tmux.list_panes(session_name)
     agent_id = f"{team_id}-worker-1"
     task_id = f"task-real-{uuid4().hex[:6]}"
@@ -108,6 +108,8 @@ def test_recover_marks_missing_pane_with_real_tmux(tmp_path):
                 goal="exercise recover",
                 status=TaskStatus.RUNNING.value,
                 agent_id=agent_id,
+                target_role_alias="builder",
+                owned_paths=["README.md"],
             )
             session.add(task)
             session.flush()

@@ -1,16 +1,19 @@
 from __future__ import annotations
 
 import logging
+import os
 import sys
 
 import structlog
 
 
 def configure_logging() -> None:
+    level_name = os.getenv("ALVIS_LOG_LEVEL", "WARNING").upper()
+    level = getattr(logging, level_name, logging.WARNING)
     logging.basicConfig(
         format="%(message)s",
         stream=sys.stderr,
-        level=logging.INFO,
+        level=level,
     )
     structlog.configure(
         processors=[

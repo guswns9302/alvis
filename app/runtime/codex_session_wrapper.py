@@ -1,11 +1,11 @@
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import pty
-import json
-import shlex
 import select
+import shlex
 import subprocess
 import sys
 import time
@@ -61,7 +61,6 @@ def main() -> int:
             os.close(master_fd)
             os.close(slave_fd)
             write_state(state_file, status="error", reason="spawn_failed", detail=str(exc))
-            print("[ALVIS SESSION EXIT]", flush=True)
             return 1
         finally:
             try:
@@ -98,4 +97,4 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    raise SystemExit(main())

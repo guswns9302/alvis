@@ -23,28 +23,67 @@ class TmuxManager:
     def team_session_name(self, team_id: str) -> str:
         return f"{self.session_prefix}-{team_id}".replace("/", "-")
 
-    def create_team_layout(self, team_id: str, pane_count: int) -> str:
+    def create_team_layout(self, team_id: str, pane_count: int, commands: list[str] | None = None) -> str:
         if not self.is_available():
             raise TmuxUnavailableError("tmux is not installed or not available on PATH")
         session_name = self.team_session_name(team_id)
         if self._session_exists(session_name):
             return session_name
-        self._run(["tmux", "new-session", "-d", "-s", session_name, "-n", "leader"])
-        for _ in range(max(pane_count - 1, 0)):
-            self._run(["tmux", "split-window", "-d", "-t", f"{session_name}:0", "-h"])
-        self._run(["tmux", "select-layout", "-t", session_name, "tiled"])
+        first_command = commands[0] if commands else None
+        cmd = ["tmux", "new-session", "-d", "-s", session_name, "-n", "leader"]
+        if first_command:
+            cmd.append(first_command)
+        self._run(cmd)
+        if pane_count >= 2:
+            worker_1_cmd = commands[1] if commands and len(commands) > 1 else None
+            split_cmd = ["tmux", "split-window", "-d", "-h", "-t", f"{session_name}:0", "-P", "-F", "#{pane_id}"]
+            if worker_1_cmd:
+                split_cmd.append(worker_1_cmd)
+            right_top_pane = self._run(split_cmd).stdout.strip()
+        else:
+            right_top_pane = ""
+
+        if pane_count >= 3:
+            worker_2_cmd = commands[2] if commands and len(commands) > 2 else None
+            split_cmd = ["tmux", "split-window", "-d", "-v", "-t", right_top_pane or f"{session_name}:0", "-P", "-F", "#{pane_id}"]
+            if worker_2_cmd:
+                split_cmd.append(worker_2_cmd)
+            self._run(split_cmd)
+
+        for extra_index in range(3, pane_count):
+            extra_cmd = commands[extra_index] if commands and extra_index < len(commands) else None
+            split_cmd = ["tmux", "split-window", "-d", "-t", f"{session_name}:0"]
+            if extra_cmd:
+                split_cmd.append(extra_cmd)
+            self._run(split_cmd)
+
+        if pane_count > 3:
+            self._run(["tmux", "select-layout", "-t", session_name, "tiled"])
+
+        self._run(["tmux", "set-option", "-t", session_name, "pane-border-status", "top"], check=False)
+        self._run(["tmux", "set-option", "-t", session_name, "pane-border-format", "#{pane_title}"], check=False)
+        for pane_id, title in zip(self.list_panes(session_name), ["leader", "worker-1", "worker-2"], strict=False):
+            self._run(["tmux", "select-pane", "-t", pane_id, "-T", title], check=False)
         return session_name
 
     def list_panes(self, session_name: str) -> list[str]:
         if not self.is_available():
             return []
         result = self._run(
-            ["tmux", "list-panes", "-t", session_name, "-F", "#{pane_id}"],
+            ["tmux", "list-panes", "-t", session_name, "-F", "#{pane_left}:#{pane_top}:#{pane_id}"],
             check=False,
         )
         if result.returncode != 0:
             return []
-        return [line.strip() for line in result.stdout.splitlines() if line.strip()]
+        panes: list[tuple[int, int, str]] = []
+        for line in result.stdout.splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            left, top, pane_id = line.split(":", 2)
+            panes.append((int(left), int(top), pane_id))
+        panes.sort(key=lambda item: (item[0], item[1]))
+        return [pane_id for _, _, pane_id in panes]
 
     def send_input(self, pane_id: str, text: str) -> None:
         if not self.is_available():
@@ -64,7 +103,9 @@ class TmuxManager:
 
     def pipe_pane_to_file(self, pane_id: str, log_path: Path) -> None:
         log_path.parent.mkdir(parents=True, exist_ok=True)
-        self._run(["tmux", "pipe-pane", "-o", "-t", pane_id, f"cat >> {log_path}"])
+        result = self._run(["tmux", "pipe-pane", "-o", "-t", pane_id, f"cat >> {log_path}"], check=False)
+        if result.returncode != 0:
+            self.log.warning("tmux.pipe_pane_failed", pane_id=pane_id, log_path=str(log_path), stderr=result.stderr)
 
     def capture_debug_snapshot(self, pane_id: str, lines: int = 200) -> str:
         result = self._run(
@@ -92,5 +133,5 @@ class TmuxManager:
         return result.returncode == 0
 
     def _run(self, cmd: list[str], check: bool = True) -> subprocess.CompletedProcess[str]:
-        self.log.info("tmux.command", cmd=cmd)
+        self.log.debug("tmux.command", cmd=cmd)
         return subprocess.run(cmd, check=check, capture_output=True, text=True)
