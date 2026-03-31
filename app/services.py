@@ -140,7 +140,7 @@ class AlvisServices:
             ready_agents = []
             leader_pane = panes[0] if panes else None
             worker_pane = panes[1] if len(panes) > 1 else None
-            for idx, agent in enumerate(agents):
+            for agent in agents:
                 pane_id = leader_pane if agent.role == AgentRole.LEADER.value else worker_pane
                 shared_root, _ = self.worktrees.ensure_worktree(team_id, agent.agent_id)
                 repo.update_agent(
@@ -160,7 +160,17 @@ class AlvisServices:
                     event_type=event_type_name(EventType.SESSION_STARTED),
                     payload=event_payload("Session started", session_name=session_name, pane_id=pane_id),
                 )
-                if pane_id:
+                if not pane_id:
+                    session_issues.append(
+                        {
+                            "agent_id": agent.agent_id,
+                            "runtime_status": "no_session",
+                            "error_summary": "tmux pane could not be created.",
+                            "error_hint": "tmux layout creation did not return a pane for this agent.",
+                        }
+                    )
+                    continue
+                if agent.role == AgentRole.LEADER.value:
                     runtime_paths = self.codex.bootstrap_session(agent.agent_id, pane_id, str(shared_root))
                     runtime_health = self.runtime_health(agent)
                     repo.append_event(
@@ -180,6 +190,15 @@ class AlvisServices:
                                 "error_hint": runtime_health.get("error_hint"),
                             }
                         )
+                else:
+                    runtime_paths = {key: str(value) for key, value in self.codex.session_paths(agent.agent_id).items()}
+                    repo.append_event(
+                        team_id=team_id,
+                        agent_id=agent.agent_id,
+                        event_type=event_type_name(EventType.AGENT_HEARTBEAT),
+                        payload=event_payload("Worker dashboard attached", **runtime_paths),
+                    )
+                    ready_agents.append(agent.agent_id)
             return {
                 "team_id": team_id,
                 "session_name": session_name,

@@ -42,6 +42,7 @@ class DaemonClient:
         *,
         payload: dict | None = None,
         query: dict[str, str | None] | None = None,
+        timeout: float = 5,
     ):
         data = None
         headers = {"Accept": "application/json"}
@@ -50,7 +51,7 @@ class DaemonClient:
             headers["Content-Type"] = "application/json"
         req = request.Request(self._url(path, query), data=data, method=method.upper(), headers=headers)
         try:
-            with request.urlopen(req, timeout=5) as response:
+            with request.urlopen(req, timeout=timeout) as response:
                 body = response.read().decode("utf-8")
                 return json.loads(body) if body else None
         except error.HTTPError as exc:
@@ -64,7 +65,7 @@ class DaemonClient:
             raise DaemonUnavailableError(str(exc)) from exc
 
     def health(self, workspace_root: Path | None = None) -> dict:
-        return self.request_json("GET", "/health", query=self.with_workspace(workspace_root))
+        return self.request_json("GET", "/health", query=self.with_workspace(workspace_root), timeout=5)
 
     def with_workspace(self, workspace_root: Path | None = None) -> dict[str, str]:
         return {"workspace_root": str((workspace_root or Path.cwd()).resolve())}

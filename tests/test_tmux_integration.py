@@ -142,3 +142,31 @@ def test_provision_team_rolls_back_partial_create(tmp_path, monkeypatch):
         repo = Repository(session)
         assert repo.get_team(team_id) is None
         assert repo.list_agents(team_id) == []
+
+
+def test_start_team_does_not_block_on_each_worker_runtime(tmp_path, monkeypatch):
+    services = create_test_services(tmp_path)
+    team_id = f"tmux-dashboard-{uuid4().hex[:6]}"
+    services.create_team(team_id, "reviewer:checker", "analyst:analyst")
+
+    monkeypatch.setattr(services.tmux, "create_team_layout", lambda team_id, pane_count, commands: "session-demo")
+    monkeypatch.setattr(services.tmux, "list_panes", lambda session_name: ["%1", "%2"])
+
+    bootstrap_calls: list[str] = []
+
+    def record_bootstrap(agent_id: str, pane_id: str, cwd: str):
+        bootstrap_calls.append(agent_id)
+        return {"state": "ok"}
+
+    monkeypatch.setattr(services.codex, "bootstrap_session", record_bootstrap)
+    monkeypatch.setattr(services, "runtime_health", lambda agent: {"status": "ready", "ready": True})
+
+    result = services.start_team(team_id)
+
+    assert bootstrap_calls == [f"{team_id}-leader"]
+    assert result["all_ready"] is True
+    assert sorted(result["ready_agents"]) == [
+        f"{team_id}-leader",
+        f"{team_id}-worker-1",
+        f"{team_id}-worker-2",
+    ]

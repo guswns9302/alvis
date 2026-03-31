@@ -217,6 +217,7 @@ def create_team(
                         "worker_1_role": resolved_worker_1_role,
                         "worker_2_role": resolved_worker_2_role,
                     },
+                    timeout=30,
                 )
             except DaemonHttpError as exc:
                 detail = exc.detail if isinstance(exc.detail, dict) else {"detail": str(exc.detail)}
@@ -256,7 +257,7 @@ def start_team(team_id: str, json_output: bool = typer.Option(False, "--json")):
             result = _services().start_team(team_id)
         else:
             client = _ensure_daemon_running()
-            result = client.request_json("POST", "/teams/start", payload={**client.with_workspace(_workspace_root()), "team_id": team_id})
+            result = client.request_json("POST", "/teams/start", payload={**client.with_workspace(_workspace_root()), "team_id": team_id}, timeout=30)
         _emit(result, json_output, format_team_start)
     except ValueError as exc:
         typer.secho(str(exc), fg=typer.colors.RED, err=True)

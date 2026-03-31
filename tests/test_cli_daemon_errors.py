@@ -16,6 +16,7 @@ runner = CliRunner()
 class FakeDaemonClient:
     def __init__(self, *, error: Exception | None = None):
         self.error = error
+        self.calls = []
 
     def health(self, workspace_root=None):
         return {
@@ -31,11 +32,15 @@ class FakeDaemonClient:
         return {"workspace_root": str(workspace_root or "/tmp/workspace")}
 
     def request_json(self, *args, **kwargs):
+        self.calls.append({"args": args, "kwargs": kwargs})
         if self.error:
             raise self.error
         return {
             "team_id": "demo",
-            "workers": [],
+            "workers": [
+                {"agent_id": "demo-worker-1", "role": "reviewer", "role_alias": "reviewer"},
+                {"agent_id": "demo-worker-2", "role": "analyst", "role_alias": "analyst"},
+            ],
             "start_result": {"all_ready": False},
         }
 
@@ -87,9 +92,36 @@ def test_team_create_surfaces_conflict_error(monkeypatch, tmp_path):
             "reviewer:reviewer",
             "--worker-2-role",
             "analyst:analyst",
+            "--json",
             "--no-attach",
         ],
     )
 
     assert result.exit_code == 1
     assert "team demo already exists" in result.output
+
+
+def test_team_create_uses_longer_daemon_timeout(monkeypatch, tmp_path):
+    client = FakeDaemonClient()
+    monkeypatch.setattr(cli_module, "_workspace_root", lambda: tmp_path)
+    monkeypatch.setattr(cli_module, "_direct_mode", lambda: False)
+    monkeypatch.setattr(cli_module, "_ensure_daemon_running", lambda: client)
+
+    result = runner.invoke(
+        cli_module.app,
+        [
+            "team",
+            "create",
+            "demo",
+            "--worker-1-role",
+            "reviewer:reviewer",
+            "--worker-2-role",
+            "analyst:analyst",
+            "--json",
+            "--no-attach",
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert client.calls
+    assert client.calls[0]["kwargs"]["timeout"] == 30
