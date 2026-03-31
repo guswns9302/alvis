@@ -10,7 +10,6 @@ import time
 import traceback
 
 from app.bootstrap import bootstrap_services
-from app.runtime.output_collector import OutputCollector
 from app.runtime.ui_state import WORKER_LOG_EVENTS, compact_task_title, filtered_events, format_timeline_entry, signal_dot, status_signal, worker_agents
 
 
@@ -22,17 +21,20 @@ def _clear() -> None:
     sys.stdout.flush()
 
 
-def _rewrite_header(lines: list[str]) -> None:
+def _rewrite_header(lines: list[str], previous: list[str] | None = None) -> list[str]:
+    previous = previous or []
     sys.stdout.write("\x1b[s")
-    sys.stdout.write("\x1b[H")
     for row in range(HEADER_HEIGHT):
-        sys.stdout.write("\x1b[2K")
         text = lines[row] if row < len(lines) else ""
+        if row < len(previous) and previous[row] == text:
+            continue
+        sys.stdout.write(f"\x1b[{row + 1};1H")
+        sys.stdout.write("\x1b[2K")
         sys.stdout.write(text)
-        if row < HEADER_HEIGHT - 1:
-            sys.stdout.write("\n")
+    sys.stdout.write(f"\x1b[{HEADER_HEIGHT};1H")
     sys.stdout.write("\x1b[u")
     sys.stdout.flush()
+    return list(lines[:HEADER_HEIGHT])
 
 
 def _spawn_worker_runtime(agent_id: str) -> subprocess.Popen[str]:
@@ -80,19 +82,6 @@ def _pump_inbox(agent_id: str, process: subprocess.Popen[str], offset: int) -> i
     return len(lines)
 
 
-def _clean_summary(summary: str | None) -> str | None:
-    if not summary:
-        return None
-    collector = OutputCollector()
-    normalized = collector._normalize_text(summary)  # type: ignore[attr-defined]
-    if not normalized:
-        return None
-    line = normalized.splitlines()[0].strip()
-    if len(line) > 120:
-        line = line[:117].rstrip() + "..."
-    return line
-
-
 def _header_lines(team_id: str, blink_on: bool) -> list[str]:
     services = bootstrap_services()
     status = services.status(team_id)
@@ -116,7 +105,16 @@ def _header_lines(team_id: str, blink_on: bool) -> list[str]:
     return lines[:HEADER_HEIGHT]
 
 
-def _append_new_logs(team_id: str, seen_event_ids: set[str]) -> None:
+def _coalesce_log_line(line: str, counts: dict[str, int]) -> str | None:
+    if counts.get(line):
+        counts[line] += 1
+        return None
+    counts.clear()
+    counts[line] = 1
+    return line
+
+
+def _append_new_logs(team_id: str, seen_event_ids: set[str], repeated_lines: dict[str, int]) -> None:
     services = bootstrap_services()
     status = services.status(team_id)
     events = filtered_events(services, team_id, WORKER_LOG_EVENTS)
@@ -125,7 +123,10 @@ def _append_new_logs(team_id: str, seen_event_ids: set[str]) -> None:
             continue
         seen_event_ids.add(event.event_id)
         line = format_timeline_entry(event, status)
-        sys.stdout.write(f"{line}\n")
+        rendered = _coalesce_log_line(line, repeated_lines)
+        if rendered is None:
+            continue
+        sys.stdout.write(f"{rendered}\n")
     sys.stdout.flush()
 
 
@@ -150,7 +151,11 @@ def main() -> int:
     processes = {worker["agent_id"]: _spawn_worker_runtime(worker["agent_id"]) for worker in workers}
     inbox_offsets = {worker["agent_id"]: 0 for worker in workers}
     seen_event_ids: set[str] = set()
+    repeated_lines: dict[str, int] = {}
     blink_on = True
+    last_blink = time.monotonic()
+    pulse_seconds = services.settings.worker_signal_pulse_seconds
+    header_cache: list[str] = []
 
     _clear()
     sys.stdout.write("\n" * (HEADER_HEIGHT - 1))
@@ -161,9 +166,12 @@ def main() -> int:
             try:
                 for agent_id, process in processes.items():
                     inbox_offsets[agent_id] = _pump_inbox(agent_id, process, inbox_offsets[agent_id])
-                _rewrite_header(_header_lines(team_id, blink_on))
-                _append_new_logs(team_id, seen_event_ids)
-                blink_on = not blink_on
+                now = time.monotonic()
+                if now - last_blink >= pulse_seconds:
+                    blink_on = not blink_on
+                    last_blink = now
+                header_cache = _rewrite_header(_header_lines(team_id, blink_on), header_cache)
+                _append_new_logs(team_id, seen_event_ids, repeated_lines)
             except ValueError as exc:  # pragma: no cover - runtime cleanup path
                 if "not found" in str(exc):
                     return 0
@@ -172,7 +180,7 @@ def main() -> int:
                 _append_error(traceback.format_exc())
                 sys.stdout.write("[workers/error] dashboard render failed\n")
                 sys.stdout.flush()
-            select.select([], [], [], 0.8)
+            select.select([], [], [], 0.2)
     finally:  # pragma: no cover - runtime cleanup
         for process in processes.values():
             if process.poll() is None:

@@ -88,6 +88,7 @@ class AgentOutput(BaseModel):
     kind: str
     summary: str
     status_signal: str | None = None
+    output_parse_status: str | None = None
     question_for_leader: list[str] = Field(default_factory=list)
     requested_context: list[str] = Field(default_factory=list)
     followup_suggestion: list[str] = Field(default_factory=list)

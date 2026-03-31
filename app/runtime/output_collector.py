@@ -17,6 +17,9 @@ class OutputSnapshot:
 
 class OutputCollector:
     VALID_STATUS_SIGNALS = {"done", "need_input", "blocked", "needs_review"}
+    PARSE_OK = "ok"
+    PARSE_NO_RESULT_BLOCK = "no_result_block"
+    PARSE_INVALID_RESULT_BLOCK = "invalid_result_block"
     ANSI_PATTERN = re.compile(r"\x1b(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~]|\].*?(?:\x07|\x1b\\))")
     RESULT_START = "ALVIS_RESULT_START"
     RESULT_END = "ALVIS_RESULT_END"
@@ -236,8 +239,9 @@ class OutputCollector:
             risk_flags=risk_flags,
         )
 
-    def summarize_task_output(self, *, agent_id: str, task_id: str, log_text: str) -> AgentOutput:
-        ansi_stripped = self._strip_ansi(log_text)
+    def summarize_task_output(self, *, agent_id: str, task_id: str, log_text: str, final_message_text: str | None = None) -> AgentOutput:
+        parse_input = final_message_text if final_message_text and final_message_text.strip() else log_text
+        ansi_stripped = self._strip_ansi(parse_input)
         clean_text = self._normalize_text(log_text)
         heuristic = self._heuristic_output(agent_id=agent_id, task_id=task_id, clean_text=clean_text)
         block, is_complete = self._extract_latest_result_block(ansi_stripped)
@@ -246,6 +250,7 @@ class OutputCollector:
                 task_id=task_id,
                 agent_id=agent_id,
                 kind="delta",
+                output_parse_status=self.PARSE_NO_RESULT_BLOCK,
                 summary=(
                     heuristic.summary
                     if heuristic.summary != "No usable task output captured yet."
@@ -262,6 +267,7 @@ class OutputCollector:
                 task_id=task_id,
                 agent_id=agent_id,
                 kind="delta",
+                output_parse_status=self.PARSE_INVALID_RESULT_BLOCK,
                 summary="No usable task output captured yet.",
             )
         summary = structured["summary"] or heuristic.summary
@@ -274,6 +280,7 @@ class OutputCollector:
             agent_id=agent_id,
             kind=kind,
             summary=summary,
+            output_parse_status=self.PARSE_OK,
             status_signal=(structured["status_signal"] or None),  # type: ignore[arg-type]
             question_for_leader=list(structured["question_for_leader"]),
             requested_context=list(structured["requested_context"]),

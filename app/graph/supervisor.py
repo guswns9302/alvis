@@ -231,6 +231,22 @@ class Supervisor:
             return True
         return False
 
+    def _redo_source_task(self, task):
+        current = task
+        while current.title.startswith("Redo:") and current.parent_task_id:
+            current = self.deps.services.get_task(current.parent_task_id)
+        if current.parent_task_id and not current.title.startswith("Redo:"):
+            return self.deps.services.get_task(current.parent_task_id)
+        return current
+
+    def _redo_attempt_count(self, task) -> int:
+        source_task = self._redo_source_task(task)
+        return sum(
+            1
+            for candidate in self.deps.services.list_run_tasks(source_task.run_id)
+            if candidate.title.startswith("Redo:") and self._redo_source_task(candidate).task_id == source_task.task_id
+        )
+
     def _create_reviewer_handoff(self, state: AlvisRunState, task, output, summary: str):
         reviewer = self._reviewer_for_team(state["team_id"])
         if reviewer is None or self._existing_handoff(task.task_id):
@@ -273,9 +289,28 @@ class Supervisor:
         return handoff_task
 
     def _create_redo_task(self, state: AlvisRunState, task, output, reason: str):
-        if self._existing_child_task(task.task_id, title_prefix="Redo:"):
+        source_task = self._redo_source_task(task)
+        if self._redo_attempt_count(task) >= self.deps.services.settings.redo_attempt_limit:
+            self.deps.services.append_event(
+                team_id=state["team_id"],
+                run_id=state["run_id"],
+                task_id=task.task_id,
+                agent_id=task.agent_id,
+                event_type=event_type_name(EventType.ERROR_RAISED),
+                payload=event_payload(
+                    "Redo suppressed: source retry limit reached",
+                    source_task_id=source_task.task_id,
+                    reason=reason,
+                ),
+            )
             return None
-        source_task = self.deps.services.get_task(task.parent_task_id) if task.parent_task_id else task
+        if any(
+            candidate.title.startswith("Redo:")
+            and self._redo_source_task(candidate).task_id == source_task.task_id
+            and candidate.status in {TaskStatus.ASSIGNED.value, TaskStatus.RUNNING.value, TaskStatus.WAITING_INPUT.value}
+            for candidate in self.deps.services.list_run_tasks(source_task.run_id)
+        ):
+            return None
         target_role_alias = source_task.target_role_alias
         owned_paths = source_task.owned_paths
         title = f"Redo: {source_task.title}"
@@ -510,8 +545,33 @@ class Supervisor:
             changed_files = output.changed_files if output else []
             risk_flags = output.risk_flags if output else []
             status_signal = output.status_signal or "done"
+            parse_failed = output.output_parse_status in {"no_result_block", "invalid_result_block"}
             if output and task.parent_task_id:
-                if status_signal in {"blocked", "needs_review"}:
+                if parse_failed:
+                    self.deps.services.update_task(task.task_id, status=TaskStatus.BLOCKED.value, result_summary=summary)
+                    blocked.append(
+                        {
+                            "task_id": task.task_id,
+                            "agent_id": task.agent_id,
+                            "title": task.title,
+                            "goal": task.goal,
+                            "status": TaskStatus.BLOCKED.value,
+                        }
+                    )
+                    self.deps.services.append_event(
+                        team_id=state["team_id"],
+                        run_id=state["run_id"],
+                        task_id=task.task_id,
+                        agent_id=task.agent_id,
+                        event_type=event_type_name(EventType.ERROR_RAISED),
+                        payload=event_payload(
+                            "응답 파싱 실패",
+                            parse_status=output.output_parse_status,
+                            summary=summary,
+                        ),
+                    )
+                    continue
+                if status_signal in {"blocked", "needs_review"} and not parse_failed:
                     redo_task = self._create_redo_task(state, task, output, summary)
                     self.deps.services.update_task(task.task_id, status=TaskStatus.DONE.value, result_summary=summary)
                     completed.append(
@@ -540,6 +600,16 @@ class Supervisor:
                                 "title": redo_task.title,
                                 "goal": redo_task.goal,
                                 "status": redo_task.status,
+                            }
+                        )
+                    else:
+                        blocked.append(
+                            {
+                                "task_id": task.task_id,
+                                "agent_id": task.agent_id,
+                                "title": task.title,
+                                "goal": task.goal,
+                                "status": TaskStatus.BLOCKED.value,
                             }
                         )
                     continue
@@ -663,6 +733,30 @@ class Supervisor:
                 )
                 continue
             if output and status_signal == "blocked":
+                if parse_failed:
+                    self.deps.services.update_task(task.task_id, status=TaskStatus.BLOCKED.value, result_summary=summary)
+                    blocked.append(
+                        {
+                            "task_id": task.task_id,
+                            "agent_id": task.agent_id,
+                            "title": task.title,
+                            "goal": task.goal,
+                            "status": TaskStatus.BLOCKED.value,
+                        }
+                    )
+                    self.deps.services.append_event(
+                        team_id=state["team_id"],
+                        run_id=state["run_id"],
+                        task_id=task.task_id,
+                        agent_id=task.agent_id,
+                        event_type=event_type_name(EventType.ERROR_RAISED),
+                        payload=event_payload(
+                            "응답 파싱 실패",
+                            parse_status=output.output_parse_status,
+                            summary=summary,
+                        ),
+                    )
+                    continue
                 redo_task = self._create_redo_task(state, task, output, summary)
                 self.deps.services.update_task(task.task_id, status=TaskStatus.DONE.value, result_summary=summary)
                 completed.append(

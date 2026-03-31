@@ -215,3 +215,26 @@ def test_output_collector_ignores_codex_startup_noise():
 
     assert output.kind == "delta"
     assert output.summary == "No usable task output captured yet."
+
+
+def test_output_collector_prefers_final_message_text_over_stdout_noise():
+    output = OutputCollector().summarize_task_output(
+        agent_id="agent-1",
+        task_id="task-1",
+        log_text="stream noise\nstill running\n",
+        final_message_text="""
+        ALVIS_RESULT_START
+        STATUS: done
+        SUMMARY: Final assistant message captured from codex exec.
+        CHANGED_FILES:
+        - app/services.py
+        TEST_RESULTS:
+        - pytest tests/test_output_collector.py -q
+        RISK_FLAGS:
+        ALVIS_RESULT_END
+        """,
+    )
+
+    assert output.kind == "final"
+    assert output.output_parse_status == "ok"
+    assert output.summary == "Final assistant message captured from codex exec."

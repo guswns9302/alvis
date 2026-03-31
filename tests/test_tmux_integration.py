@@ -170,3 +170,17 @@ def test_start_team_does_not_block_on_each_worker_runtime(tmp_path, monkeypatch)
         f"{team_id}-worker-1",
         f"{team_id}-worker-2",
     ]
+
+
+def test_noninteractive_codex_invocation_uses_output_last_message(tmp_path):
+    services = create_test_services(tmp_path)
+
+    command = services._build_noninteractive_codex_invocation(tmp_path / "final.txt")
+
+    assert "--output-last-message" not in command
+
+    services.settings = services.settings.model_copy(update={"codex_command": "codex"})  # type: ignore[misc]
+    command = services._build_noninteractive_codex_invocation(tmp_path / "final.txt")
+
+    assert "--output-last-message" in command
+    assert str(tmp_path / "final.txt") in command

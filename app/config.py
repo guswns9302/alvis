@@ -24,6 +24,8 @@ class Settings(BaseModel):
     tmux_path: str | None = None
     heartbeat_timeout_seconds: int = 120
     review_retry_threshold: int = 2
+    worker_signal_pulse_seconds: float = 1.5
+    redo_attempt_limit: int = 1
     daemon_host: str = "127.0.0.1"
     daemon_port: int = 35731
     release_repo: str = "guswns9302/alvis"

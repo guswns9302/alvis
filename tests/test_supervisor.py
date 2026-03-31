@@ -113,6 +113,49 @@ def test_supervisor_creates_redo_when_worker_output_is_invalid(tmp_path):
     assert state["final_output_candidate"]["task_id"] == redo_task.task_id
 
 
+def test_supervisor_limits_redo_chain_per_source_task(tmp_path):
+    services = create_services(tmp_path)
+    team_id = f"redo-limit-{uuid4().hex[:8]}"
+    services.create_team(team_id, "implementer:builder", "reviewer:checker")
+    supervisor = Supervisor(SupervisorDeps(services=services))
+
+    def blocked_dispatch(agent_id, contract):
+        services.append_event(
+            team_id=team_id,
+            run_id=contract.context["run_id"],
+            task_id=contract.task_id,
+            agent_id=agent_id,
+            event_type=EventType.AGENT_OUTPUT_FINAL.value,
+            payload={
+                "task_id": contract.task_id,
+                "agent_id": agent_id,
+                "kind": "final",
+                "status_signal": "blocked",
+                "summary": "Off target result",
+                "output_parse_status": "ok",
+                "question_for_leader": [],
+                "requested_context": [],
+                "followup_suggestion": [],
+                "dependency_note": [],
+                "changed_files": [],
+                "test_results": [],
+                "risk_flags": ["redo needed"],
+            },
+        )
+        return type("Dispatch", (), {"ok": True, "reason": "background_exec", "prompt": "blocked"})()
+
+    services.dispatch_task = blocked_dispatch  # type: ignore[method-assign]
+
+    state = supervisor.run(team_id, "fix a bug")
+    tasks = services.list_run_tasks(state["run_id"])
+    redo_tasks = [task for task in tasks if task.title.startswith("Redo:")]
+    events = services.list_events(team_id=team_id, run_id=state["run_id"])
+
+    assert len(redo_tasks) == 1
+    assert state["status"] == RunStatus.FAILED.value
+    assert any("Redo suppressed" in (event.payload.get("summary") or "") for event in events)
+
+
 def test_supervisor_persists_checkpoint_for_active_run(tmp_path):
     services = create_services(tmp_path)
     team_id = f"checkpoint-team-{uuid4().hex[:8]}"

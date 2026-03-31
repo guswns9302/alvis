@@ -11,10 +11,6 @@ WORKER_LOG_EVENTS = {
     EventType.TASK_HANDOFF_CREATED.value,
     EventType.TASK_HANDOFF_DISPATCHED.value,
     EventType.TASK_HANDOFF_COMPLETED.value,
-    EventType.TASK_RETRY_REQUESTED.value,
-    EventType.TASK_RETRY_SUCCEEDED.value,
-    EventType.TASK_RETRY_SKIPPED.value,
-    EventType.AGENT_STATUS_CHANGED.value,
     EventType.AGENT_OUTPUT_FINAL.value,
     EventType.INTERACTION_CREATED.value,
     EventType.INTERACTION_ROUTED.value,
@@ -77,6 +73,10 @@ def compact_task_title(status: dict, agent: dict, width: int = 44) -> str:
     if not task:
         return "대기 중"
     title = task.get("title") or "작업 없음"
+    if title.startswith("Redo:"):
+        attempts = task.get("redo_attempt_count") or 0
+        limit = 1 if task.get("redo_limit_reached") else max(attempts, 1)
+        title = f"{title} ({attempts}/{limit})"
     if len(title) <= width:
         return title
     return title[: width - 3].rstrip() + "..."
@@ -89,6 +89,10 @@ def summarize_event(event) -> str:
         output_summary = payload.get("summary") or payload.get("output_summary")
         if output_summary:
             summary = output_summary
+    elif event.event_type == EventType.TASK_HANDOFF_CREATED.value and str(summary).startswith("Redo task"):
+        summary = "재작업 생성"
+    elif event.event_type == EventType.TASK_HANDOFF_DISPATCHED.value and str(summary).startswith("Redo task"):
+        summary = "재작업 전달"
     return str(summary).strip()
 
 

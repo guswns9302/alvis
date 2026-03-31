@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import shlex
 import subprocess
+import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -375,6 +376,24 @@ class AlvisServices:
             ]
         )
 
+    def _source_task_id(self, tasks: list[TaskModel], task: TaskModel) -> str:
+        task_map = {candidate.task_id: candidate for candidate in tasks}
+        current = task
+        while current.title.startswith("Redo:") and current.parent_task_id and current.parent_task_id in task_map:
+            current = task_map[current.parent_task_id]
+        if current.parent_task_id and current.parent_task_id in task_map and not current.title.startswith("Redo:"):
+            return current.parent_task_id
+        return current.task_id
+
+    def _redo_attempt_count(self, tasks: list[TaskModel], source_task_id: str) -> int:
+        return len(
+            [
+                candidate
+                for candidate in tasks
+                if candidate.title.startswith("Redo:") and self._source_task_id(tasks, candidate) == source_task_id
+            ]
+        )
+
     def _blocking_conflicts_for_agent(self, team_id: str, agent_id: str) -> list[dict]:
         worktree_report = self.inspect_worktrees(team_id)
         return [
@@ -568,31 +587,54 @@ class AlvisServices:
             return [*parts, "exec", "--color", "never", "-"]
         return parts
 
+    def _build_noninteractive_codex_invocation(self, output_path: Path | None = None) -> list[str]:
+        command = self._build_noninteractive_codex_command()
+        executable = Path(command[0]).name
+        if executable != "codex" or "exec" not in command[1:]:
+            return command
+        if output_path is None or "--output-last-message" in command or "-o" in command:
+            return command
+        return [*command[:-1], "--output-last-message", str(output_path), command[-1]]
+
+    def _run_noninteractive_codex(self, prompt: str, cwd: str) -> tuple[subprocess.CompletedProcess[str], str | None]:
+        with tempfile.TemporaryDirectory(prefix="alvis-codex-") as temp_dir:
+            output_path = Path(temp_dir) / "last-message.txt"
+            command = self._build_noninteractive_codex_invocation(output_path)
+            result = subprocess.run(
+                command,
+                input=prompt + "\n",
+                text=True,
+                capture_output=True,
+                cwd=cwd,
+                check=False,
+            )
+            final_message = output_path.read_text() if output_path.exists() else None
+            return result, final_message
+
     def _dispatch_task_inline(self, agent: AgentModel, contract: TaskContract, prompt: str, reason: str) -> DispatchResult:
-        result = subprocess.run(
-            self._build_noninteractive_codex_command(),
-            input=prompt + "\n",
-            text=True,
-            capture_output=True,
-            cwd=contract.cwd,
-            check=False,
-        )
+        result, final_message = self._run_noninteractive_codex(prompt, contract.cwd)
         output = self.output_collector.summarize_task_output(
             agent_id=agent.agent_id,
             task_id=contract.task_id,
             log_text=result.stdout,
+            final_message_text=final_message,
         )
         if output.kind == "delta":
             if result.returncode == 0:
+                parse_status = output.output_parse_status or "no_result_block"
+                parse_reason = "Missing ALVIS structured result block."
+                if parse_status == OutputCollector.PARSE_INVALID_RESULT_BLOCK:
+                    parse_reason = "Invalid ALVIS structured result block."
                 output = AgentOutput(
                     task_id=contract.task_id,
                     agent_id=agent.agent_id,
                     kind="final",
                     status_signal="blocked",
                     summary="Task did not produce a valid structured result block.",
+                    output_parse_status=parse_status,
                     changed_files=output.changed_files,
                     test_results=output.test_results,
-                    risk_flags=output.risk_flags or ["Missing ALVIS structured result block."],
+                    risk_flags=output.risk_flags or [parse_reason],
                 )
             else:
                 output = AgentOutput(
@@ -601,6 +643,7 @@ class AlvisServices:
                     kind="final",
                     summary=f"Inline task execution failed with exit code {result.returncode}.",
                     status_signal="blocked",
+                    output_parse_status=output.output_parse_status,
                     risk_flags=[result.stderr.strip() or "inline execution failed"],
                 )
         self.append_event(
@@ -1344,6 +1387,7 @@ class AlvisServices:
                 "tasks": [
                     {
                         "task_id": task.task_id,
+                        "source_task_id": self._source_task_id(tasks, task),
                         "task_type": task.task_type,
                         "parent_task_id": task.parent_task_id,
                         "title": task.title,
@@ -1352,6 +1396,9 @@ class AlvisServices:
                         "owned_paths": task.owned_paths,
                         "status": task.status,
                         "agent_id": task.agent_id,
+                        "redo_attempt_count": self._redo_attempt_count(tasks, self._source_task_id(tasks, task)),
+                        "redo_limit_reached": self._redo_attempt_count(tasks, self._source_task_id(tasks, task))
+                        >= self.settings.redo_attempt_limit,
                         "result_summary": task.result_summary,
                         "latest_output": None
                         if not self.get_task_output(task.task_id)
