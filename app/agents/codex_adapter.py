@@ -136,12 +136,12 @@ class CodexAdapter:
             f"exec {python_exec} -m app.runtime.leader_console --team-id {shlex.quote(team_id)}"
         )
 
-    def build_worker_monitor_command(self, team_id: str, agent_id: str) -> str:
+    def build_worker_dashboard_command(self, team_id: str) -> str:
         python_exec = shlex.quote(sys.executable)
         code_root = shlex.quote(str(self.repo_root))
         return (
             f"cd {code_root} && {self._export_prefix()} && "
-            f"exec {python_exec} -m app.runtime.worker_monitor --team-id {shlex.quote(team_id)} --agent-id {shlex.quote(agent_id)}"
+            f"exec {python_exec} -m app.runtime.worker_dashboard --team-id {shlex.quote(team_id)}"
         )
 
     def build_bootstrap_command(self, agent_id: str, cwd: str) -> str:

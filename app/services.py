@@ -130,18 +130,18 @@ class AlvisServices:
             agents = repo.list_agents(team_id)
             for agent in agents:
                 self.codex.reset_session_files(agent.agent_id)
-            bootstrap_commands = []
-            for agent in agents:
-                if agent.role == AgentRole.LEADER.value:
-                    bootstrap_commands.append(self.codex.build_leader_console_command(team_id))
-                else:
-                    bootstrap_commands.append(self.codex.build_worker_monitor_command(team_id, agent.agent_id))
-            session_name = self.tmux.create_team_layout(team_id, len(agents), bootstrap_commands)
+            bootstrap_commands = [
+                self.codex.build_leader_console_command(team_id),
+                self.codex.build_worker_dashboard_command(team_id),
+            ]
+            session_name = self.tmux.create_team_layout(team_id, 2, bootstrap_commands)
             panes = self.tmux.list_panes(session_name)
             session_issues = []
             ready_agents = []
+            leader_pane = panes[0] if panes else None
+            worker_pane = panes[1] if len(panes) > 1 else None
             for idx, agent in enumerate(agents):
-                pane_id = panes[idx] if idx < len(panes) else None
+                pane_id = leader_pane if agent.role == AgentRole.LEADER.value else worker_pane
                 shared_root, _ = self.worktrees.ensure_worktree(team_id, agent.agent_id)
                 repo.update_agent(
                     agent,

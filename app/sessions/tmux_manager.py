@@ -60,34 +60,15 @@ class TmuxManager:
             cmd.append(first_command)
         self._run(cmd)
         if pane_count >= 2:
-            worker_1_cmd = commands[1] if commands and len(commands) > 1 else None
+            worker_cmd = commands[1] if commands and len(commands) > 1 else None
             split_cmd = self._cmd("split-window", "-d", "-h", "-t", f"{session_name}:0", "-P", "-F", "#{pane_id}")
-            if worker_1_cmd:
-                split_cmd.append(worker_1_cmd)
-            right_top_pane = self._run(split_cmd).stdout.strip()
-        else:
-            right_top_pane = ""
-
-        if pane_count >= 3:
-            worker_2_cmd = commands[2] if commands and len(commands) > 2 else None
-            split_cmd = self._cmd("split-window", "-d", "-v", "-t", right_top_pane or f"{session_name}:0", "-P", "-F", "#{pane_id}")
-            if worker_2_cmd:
-                split_cmd.append(worker_2_cmd)
+            if worker_cmd:
+                split_cmd.append(worker_cmd)
             self._run(split_cmd)
-
-        for extra_index in range(3, pane_count):
-            extra_cmd = commands[extra_index] if commands and extra_index < len(commands) else None
-            split_cmd = self._cmd("split-window", "-d", "-t", f"{session_name}:0")
-            if extra_cmd:
-                split_cmd.append(extra_cmd)
-            self._run(split_cmd)
-
-        if pane_count > 3:
-            self._run(self._cmd("select-layout", "-t", session_name, "tiled"))
 
         self._run(self._cmd("set-option", "-t", session_name, "pane-border-status", "top"), check=False)
         self._run(self._cmd("set-option", "-t", session_name, "pane-border-format", "#{pane_title}"), check=False)
-        for pane_id, title in zip(self.list_panes(session_name), ["leader", "worker-1", "worker-2"], strict=False):
+        for pane_id, title in zip(self.list_panes(session_name), ["leader", "workers"], strict=False):
             self._run(self._cmd("select-pane", "-t", pane_id, "-T", title), check=False)
         return session_name
 

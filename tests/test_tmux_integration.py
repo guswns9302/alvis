@@ -45,10 +45,10 @@ def test_tmux_manager_creates_expected_panes(tmp_path):
     services = create_test_services(tmp_path)
     tmux = services.tmux
     team_id = f"tmux-team-{uuid4().hex[:6]}"
-    session_name = tmux.create_team_layout(team_id, 3)
+    session_name = tmux.create_team_layout(team_id, 2)
     try:
         panes = tmux.list_panes(session_name)
-        assert len(panes) == 3
+        assert len(panes) == 2
     finally:
         tmux.kill_session(session_name)
 
@@ -85,7 +85,7 @@ def test_recover_marks_missing_pane_with_real_tmux(tmp_path):
     services = create_test_services(tmp_path)
     team_id = f"recover-real-{uuid4().hex[:6]}"
     services.create_team(team_id, "implementer:builder", "reviewer:checker")
-    session_name = services.tmux.create_team_layout(team_id, 3)
+    session_name = services.tmux.create_team_layout(team_id, 2)
     panes = services.tmux.list_panes(session_name)
     agent_id = f"{team_id}-worker-1"
     task_id = f"task-real-{uuid4().hex[:6]}"
@@ -98,7 +98,7 @@ def test_recover_marks_missing_pane_with_real_tmux(tmp_path):
             repo.update_agent(
                 agent,
                 tmux_session=session_name,
-                tmux_pane=panes[1],
+                tmux_pane=panes[-1],
                 current_task_id=task_id,
                 status="running",
             )

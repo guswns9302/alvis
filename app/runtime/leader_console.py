@@ -2,14 +2,21 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
+import select
 import sys
+import termios
 import time
 import traceback
+import tty
 from pathlib import Path
 
 from app.bootstrap import bootstrap_services
-from app.enums import EventType
+from app.runtime.ui_state import LEADER_LOG_EVENTS, compact_task_title, filtered_events, format_timeline_entry, signal_dot, status_signal, worker_agents
 from app.graph.supervisor import Supervisor, SupervisorDeps
+
+
+TIMELINE_LIMIT = 12
 
 
 def _clear() -> None:
@@ -42,40 +49,6 @@ def _append_error(team_id: str, details: str) -> None:
             handle.write("\n")
 
 
-def _recent_messages(services, team_id: str, limit: int = 10) -> list[str]:
-    visible = {
-        EventType.RUN_CREATED.value,
-        EventType.TASK_CREATED.value,
-        EventType.TASK_ASSIGNED.value,
-        EventType.TASK_HANDOFF_CREATED.value,
-        EventType.TASK_HANDOFF_DISPATCHED.value,
-        EventType.LEADER_OUTPUT_READY.value,
-        EventType.INTERACTION_CREATED.value,
-        EventType.INTERACTION_ROUTED.value,
-        EventType.INTERACTION_RESOLVED.value,
-        EventType.LEADER_INSTRUCTION_CREATED.value,
-        EventType.ERROR_RAISED.value,
-    }
-    events = [event for event in services.list_events(team_id=team_id) if event.event_type in visible][-limit:]
-    lines = []
-    for event in events:
-        summary = event.payload.get("summary", event.event_type)
-        prefix = event.agent_id or "system"
-        lines.append(f"- [{prefix}] {summary}")
-    return lines
-
-
-def _render_handoffs(status: dict) -> list[str]:
-    handoffs = status.get("handoffs", [])
-    lines = [f"자동 handoff: {len(handoffs)}"]
-    for item in handoffs[:5]:
-        lines.append(
-            f"  - {item['task_id']} role={item.get('target_role_alias') or '-'} "
-            f"status={item.get('status') or '-'} title={item.get('title') or '-'}"
-        )
-    return lines
-
-
 def _parse_command(command: str) -> tuple[str, list[str]]:
     parts = command.strip().split()
     if not parts:
@@ -84,54 +57,88 @@ def _parse_command(command: str) -> tuple[str, list[str]]:
 
 
 def _run_leader_command(team_id: str, command: str, supervisor: Supervisor) -> str | None:
-    action, args = _parse_command(command)
+    action, _args = _parse_command(command)
     if action in {"/refresh", "/status"}:
         return None
     supervisor.run(team_id, command)
     return None
 
 
-def _render_buffer(team_id: str) -> str:
+def _timeline(status: dict, services, team_id: str) -> list[str]:
+    events = filtered_events(services, team_id, LEADER_LOG_EVENTS)[-TIMELINE_LIMIT:]
+    return [format_timeline_entry(event, status) for event in events]
+
+
+def _worker_status_lines(status: dict, blink_on: bool) -> list[str]:
+    lines = []
+    for worker in worker_agents(status):
+        dot = signal_dot(status_signal(worker), blink_on and status_signal(worker) == "active")
+        lines.append(
+            f"  {dot} {worker.get('role_alias') or worker['role']:<10} "
+            f"{worker['status']:<12} {compact_task_title(status, worker, width=42)}"
+        )
+    return lines or ["  - 워커 없음"]
+
+
+def _render_buffer(team_id: str, command_buffer: str, blink_on: bool) -> str:
     services = bootstrap_services()
     _write_ready_state(team_id)
     status = services.status(team_id)
+    latest_run = status.get("latest_run") or {}
     lines: list[str] = [f"Alvis Leader Console · {team_id}", ""]
-    latest_run = status.get("latest_run")
-    if latest_run:
-        lines.append(f"최근 실행: {latest_run['run_id']} · {latest_run['status']}")
-        lines.append(f"요청: {latest_run['request']}")
-        if latest_run.get("final_response") and status.get("final_output_ready", False):
-            lines.append(f"최종 응답: {latest_run['final_response']}")
-        elif latest_run.get("final_response"):
-            lines.append(f"진행 상태: {latest_run['final_response']}")
+    lines.append(f"최근 실행: {latest_run.get('run_id') or '없음'} · {latest_run.get('status') or '-'}")
+    lines.append(f"요청: {latest_run.get('request') or '-'}")
+    lines.append("")
+    lines.append("현재 작업 상태:")
+    redo_tasks = status.get("redo_tasks", [])
+    handoffs = status.get("handoffs", [])
+    if redo_tasks:
+        lines.append(f"  재작업 대기: {len(redo_tasks)}")
+    elif handoffs:
+        lines.append(f"  자동 handoff: {len(handoffs)}")
     else:
-        lines.append("최근 실행: 없음")
+        lines.append("  진행 중인 handoff 없음")
     lines.append("")
-    lines.extend(_render_handoffs(status))
+    lines.append("워커 상태:")
+    lines.extend(_worker_status_lines(status, blink_on))
     lines.append("")
-    lines.append(f"리더 큐: {len(status.get('leader_queue', []))}")
-    for item in status.get("leader_queue", [])[:5]:
-        lines.append(f"  - {item['kind']}: {item.get('message') or '-'}")
+    lines.append("작업 로그:")
+    for entry in _timeline(status, services, team_id):
+        lines.append(f"  {entry}")
+    if not status.get("latest_run"):
+        lines.append("  [system] 아직 실행된 run이 없습니다.")
     lines.append("")
-    lines.append("최근 메시지:")
-    for line in _recent_messages(services, team_id):
-        lines.append(f"  {line}")
-    lines.append("")
+    lines.append("최종 결과:")
     candidate = status.get("final_output_candidate")
-    if candidate:
-        readiness = "ready" if status.get("final_output_ready") else "not-ready"
-        lines.append(f"최종 출력 후보 ({readiness}): {candidate.get('summary') or '-'}")
-        redo_tasks = status.get("redo_tasks", [])
-        if redo_tasks:
-            lines.append(f"재작업 작업: {len(redo_tasks)}")
-            for item in redo_tasks[:3]:
-                lines.append(
-                    f"  - {item['task_id']} role={item.get('target_role_alias') or '-'} "
-                    f"status={item.get('status') or '-'} title={item.get('title') or '-'}"
-                )
-        lines.append("")
+    if status.get("final_output_ready") and latest_run.get("final_response"):
+        lines.append(f"  {latest_run['final_response']}")
+    elif candidate:
+        lines.append(f"  후보: {candidate.get('summary') or '-'}")
+    else:
+        lines.append("  아직 없음")
+    lines.append("")
     lines.append("입력: 새 요청 또는 /refresh /status /quit")
+    lines.append(f"> {command_buffer}")
     return "\n".join(lines)
+
+
+def _read_command(buffer: str) -> tuple[str, str | None]:
+    ready, _, _ = select.select([sys.stdin], [], [], 0)
+    if not ready:
+        return buffer, None
+    chunk = os.read(sys.stdin.fileno(), 32).decode(errors="ignore")
+    command = None
+    for char in chunk:
+        if char in {"\r", "\n"}:
+            command = buffer.strip()
+            buffer = ""
+        elif char == "\x7f":
+            buffer = buffer[:-1]
+        elif char == "\x03":
+            raise KeyboardInterrupt
+        elif char.isprintable():
+            buffer += char
+    return buffer, command
 
 
 def main() -> int:
@@ -142,51 +149,54 @@ def main() -> int:
     supervisor = Supervisor(SupervisorDeps(services=bootstrap_services()))
     last_render = ""
     command_feedback = ""
+    command_buffer = ""
+    blink_on = True
+    fd = sys.stdin.fileno()
+    old_attrs = termios.tcgetattr(fd)
+    tty.setcbreak(fd)
 
-    while True:
-        try:
-            current = _render_buffer(team_id)
-            if current != last_render:
+    try:
+        while True:
+            try:
+                current = _render_buffer(team_id, command_buffer, blink_on)
+                blink_on = not blink_on
+                if current != last_render:
+                    _clear()
+                    print(current, end="", flush=True)
+                    if command_feedback:
+                        print(f"\n{command_feedback}", end="", flush=True)
+                    last_render = current
+                command_buffer, command = _read_command(command_buffer)
+            except ValueError as exc:  # pragma: no cover - runtime cleanup path
+                if "not found" in str(exc):
+                    return 0
+                raise
+            except Exception:  # pragma: no cover - runtime UI fallback
+                _write_state(team_id, status="error", mode="leader_console", reason="render_failed")
+                _append_error(team_id, traceback.format_exc())
                 _clear()
-                print(current)
-                if command_feedback:
-                    print()
-                    print(command_feedback)
-                last_render = current
-            print("> ", end="", flush=True)
-        except ValueError as exc:  # pragma: no cover - runtime cleanup path
-            if "not found" in str(exc):
-                return 0
-            raise
-        except Exception:  # pragma: no cover - runtime UI fallback
-            _write_state(team_id, status="error", mode="leader_console", reason="render_failed")
-            _append_error(team_id, traceback.format_exc())
-            _clear()
-            print(f"Alvis Leader Console · {team_id}")
-            print()
-            print("리더 콘솔을 렌더링하는 중 오류가 발생했습니다. 재시도 중입니다.")
-            print(traceback.format_exc().strip().splitlines()[-1])
-            time.sleep(1)
-            continue
-        try:
-            command = input().strip()
-        except EOFError:
-            _write_ready_state(team_id)
-            time.sleep(1)
-            continue
-        if not command:
-            continue
-        if command == "/quit":
-            return 0
-        try:
-            result = _run_leader_command(team_id, command, supervisor)
-            command_feedback = result or ""
-            last_render = ""
-        except Exception as exc:  # pragma: no cover - runtime UI fallback
-            _write_state(team_id, status="error", mode="leader_console", reason="run_failed")
-            _append_error(team_id, traceback.format_exc())
-            print(f"\n[ERROR] {exc}")
-            time.sleep(2)
+                print(f"Alvis Leader Console · {team_id}")
+                print()
+                print("리더 콘솔을 렌더링하는 중 오류가 발생했습니다. 재시도 중입니다.")
+                print(traceback.format_exc().strip().splitlines()[-1])
+                time.sleep(1)
+                continue
+            if command is not None:
+                if command == "/quit":
+                    return 0
+                if command:
+                    try:
+                        result = _run_leader_command(team_id, command, supervisor)
+                        command_feedback = result or ""
+                        last_render = ""
+                    except Exception as exc:  # pragma: no cover - runtime UI fallback
+                        _write_state(team_id, status="error", mode="leader_console", reason="run_failed")
+                        _append_error(team_id, traceback.format_exc())
+                        command_feedback = f"[ERROR] {exc}"
+                        last_render = ""
+            time.sleep(0.3)
+    finally:  # pragma: no cover - terminal restore
+        termios.tcsetattr(fd, termios.TCSADRAIN, old_attrs)
 
 
 if __name__ == "__main__":
