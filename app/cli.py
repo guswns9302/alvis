@@ -8,6 +8,18 @@ import uvicorn
 
 from app.api.server import create_app
 from app.bootstrap import bootstrap_services
+from app.cli_formatters import (
+    format_cleanup,
+    format_logs,
+    format_outputs,
+    format_recover,
+    format_review_approval,
+    format_review_rejection,
+    format_reviews,
+    format_run_state,
+    format_status,
+    format_team_start,
+)
 from app.graph.supervisor import Supervisor, SupervisorDeps
 from app.logging import configure_logging
 
@@ -21,6 +33,13 @@ app.add_typer(review_app, name="review")
 def _services():
     configure_logging()
     return bootstrap_services()
+
+
+def _emit(data, json_output: bool, formatter) -> None:
+    if json_output:
+        typer.echo(json.dumps(data, indent=2))
+        return
+    typer.echo(formatter(data))
 
 
 @app.command()
@@ -37,28 +56,36 @@ def create_team(team_id: str, workers: int = 2):
 
 
 @team_app.command("start")
-def start_team(team_id: str):
+def start_team(team_id: str, json_output: bool = typer.Option(False, "--json")):
     services = _services()
     result = services.start_team(team_id)
-    typer.echo(json.dumps(result, indent=2))
+    _emit(result, json_output, format_team_start)
 
 
 @app.command()
-def run(team_id: str, request: str):
+def run(team_id: str, request: str, json_output: bool = typer.Option(False, "--json")):
     services = _services()
     supervisor = Supervisor(SupervisorDeps(services=services))
     state = supervisor.run(team_id, request)
-    typer.echo(json.dumps(state, indent=2))
+    _emit(state, json_output, format_run_state)
 
 
 @app.command()
-def status(team_id: str):
+def resume(run_id: str, json_output: bool = typer.Option(False, "--json")):
     services = _services()
-    typer.echo(json.dumps(services.status(team_id), indent=2))
+    supervisor = Supervisor(SupervisorDeps(services=services))
+    state = supervisor.resume(run_id)
+    _emit(state, json_output, format_run_state)
+
+
+@app.command()
+def status(team_id: str, json_output: bool = typer.Option(False, "--json")):
+    services = _services()
+    _emit(services.status(team_id), json_output, format_status)
 
 
 @review_app.command("list")
-def list_reviews():
+def list_reviews(json_output: bool = typer.Option(False, "--json")):
     services = _services()
     data = [
         {
@@ -71,42 +98,46 @@ def list_reviews():
         }
         for review in services.list_reviews()
     ]
-    typer.echo(json.dumps(data, indent=2))
+    _emit(data, json_output, format_reviews)
 
 
 @review_app.command("approve")
-def approve_review(review_id: str):
+def approve_review(review_id: str, json_output: bool = typer.Option(False, "--json")):
     services = _services()
     review = services.resolve_review(review_id, approved=True)
     if not review:
         raise typer.Exit(code=1)
-    typer.echo(f"approved {review.review_id}")
+    supervisor = Supervisor(SupervisorDeps(services=services))
+    state = supervisor.resume(review.run_id)
+    payload = {"review_id": review.review_id, "status": review.status, "run_state": state}
+    _emit(payload, json_output, format_review_approval)
 
 
 @review_app.command("reject")
-def reject_review(review_id: str, reason: str = "Rejected review requires follow-up task."):
+def reject_review(
+    review_id: str,
+    reason: str = "Rejected review requires follow-up task.",
+    json_output: bool = typer.Option(False, "--json"),
+):
     services = _services()
     review = services.resolve_review(review_id, approved=False, reason=reason)
     if not review:
         raise typer.Exit(code=1)
     replan = services.latest_replan_for_review(review.review_id)
     if replan:
-        typer.echo(
-            json.dumps(
-                {
-                    "review_id": review.review_id,
-                    "status": review.status,
-                    "replan": replan,
-                },
-                indent=2,
-            )
-        )
+        payload = {
+            "review_id": review.review_id,
+            "status": review.status,
+            "replan": replan,
+        }
+        _emit(payload, json_output, format_review_rejection)
         return
-    typer.echo(f"rejected {review.review_id}")
+    payload = {"review_id": review.review_id, "status": review.status}
+    _emit(payload, json_output, format_review_rejection)
 
 
 @app.command()
-def logs(team_id: str, run_id: str | None = None):
+def logs(team_id: str, run_id: str | None = None, json_output: bool = typer.Option(False, "--json")):
     services = _services()
     data = [
         {
@@ -118,19 +149,29 @@ def logs(team_id: str, run_id: str | None = None):
         }
         for event in services.list_events(team_id=team_id, run_id=run_id)
     ]
-    typer.echo(json.dumps(data, indent=2))
+    _emit(data, json_output, format_logs)
 
 
 @app.command("collect-outputs")
-def collect_outputs(team_id: str):
+def collect_outputs(team_id: str, json_output: bool = typer.Option(False, "--json")):
     services = _services()
-    typer.echo(json.dumps(services.collect_outputs(team_id), indent=2))
+    _emit(services.collect_outputs(team_id), json_output, format_outputs)
 
 
 @app.command()
-def recover(team_id: str | None = None):
+def recover(
+    team_id: str | None = typer.Option(None, "--team-id"),
+    retry: bool = typer.Option(False, "--retry"),
+    json_output: bool = typer.Option(False, "--json"),
+):
     services = _services()
-    typer.echo(json.dumps(services.recover(team_id=team_id), indent=2))
+    _emit(services.recover(team_id=team_id, retry=retry), json_output, format_recover)
+
+
+@app.command()
+def cleanup(team_id: str | None = typer.Option(None, "--team-id"), json_output: bool = typer.Option(False, "--json")):
+    services = _services()
+    _emit(services.cleanup_worktrees(team_id=team_id), json_output, format_cleanup)
 
 
 @app.command("tmux-attach")

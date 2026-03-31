@@ -74,6 +74,12 @@ class AgentOutput(BaseModel):
     risk_flags: list[str] = Field(default_factory=list)
 
 
+class DispatchResult(BaseModel):
+    ok: bool
+    reason: str | None = None
+    prompt: str | None = None
+
+
 class ReviewSummary(BaseModel):
     review_id: str
     run_id: str

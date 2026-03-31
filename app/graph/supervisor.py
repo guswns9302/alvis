@@ -11,7 +11,7 @@ except ImportError:  # pragma: no cover
     StateGraph = None
 
 from app.core.events import event_payload, event_type_name
-from app.enums import EventType, RunStatus, TaskStatus
+from app.enums import EventType, ReviewStatus, RunStatus, TaskStatus
 from app.graph.state import AlvisRunState
 from app.logging import get_logger
 from app.reviews.gate import ReviewGate
@@ -24,6 +24,14 @@ class SupervisorDeps:
 
 
 class Supervisor:
+    NODE_ORDER = {
+        "ingest_request": "plan_tasks",
+        "plan_tasks": "select_agents",
+        "select_agents": "dispatch_tasks",
+        "dispatch_tasks": "wait_for_updates",
+        "wait_for_updates": "evaluate_progress",
+    }
+
     def __init__(self, deps: SupervisorDeps):
         self.deps = deps
         self.log = get_logger(__name__)
@@ -74,25 +82,114 @@ class Supervisor:
             user_request=request,
             tasks=[],
             assignments=[],
+            active_tasks=[],
             completed_tasks=[],
             blocked_tasks=[],
             review_requests=[],
             status=RunStatus.CREATED.value,
         )
-        graph = self.build_graph()
-        if graph is None:
-            return self._run_without_langgraph(state)
-        return graph.invoke(state)
+        return self._execute_from_node(state, "ingest_request")
 
-    def _run_without_langgraph(self, state: AlvisRunState) -> AlvisRunState:
-        state = self.ingest_request(state)
-        state = self.plan_tasks(state)
-        state = self.select_agents(state)
-        state = self.dispatch_tasks(state)
-        state = self.wait_for_updates(state)
-        state = self.evaluate_progress(state)
-        state = self.synthesize_result(state)
+    def resume(self, run_id: str) -> AlvisRunState:
+        checkpoint = self.deps.services.load_checkpoint(run_id)
+        if checkpoint is None:
+            raise ValueError(f"run {run_id} has no checkpoint to resume")
+        state = AlvisRunState(**checkpoint.state)
+        state = self._refresh_state_from_db(state)
+        next_node = checkpoint.next_node
+
+        if next_node == "await_review_resolution":
+            pending_reviews = self.deps.services.list_run_reviews(run_id, status=ReviewStatus.PENDING)
+            if pending_reviews:
+                state["status"] = RunStatus.WAITING_REVIEW.value
+                return state
+            active_tasks = self.deps.services.list_active_run_tasks(run_id)
+            next_node = "wait_for_updates" if active_tasks else "synthesize_result"
+            self.deps.services.append_event(
+                team_id=state["team_id"],
+                run_id=run_id,
+                event_type=event_type_name(EventType.RUN_RESUMED),
+                payload=event_payload("Run resumed from checkpoint", next_node=next_node),
+            )
+
+        return self._execute_from_node(state, next_node)
+
+    def _refresh_state_from_db(self, state: AlvisRunState) -> AlvisRunState:
+        if "run_id" not in state:
+            return state
+        tasks = self.deps.services.list_run_tasks(state["run_id"])
+        state["tasks"] = [
+            {
+                "task_id": task.task_id,
+                "agent_id": task.agent_id,
+                "title": task.title,
+                "goal": task.goal,
+                "status": task.status,
+                "review_required": task.review_required,
+            }
+            for task in tasks
+        ]
+        reviews = self.deps.services.list_run_reviews(state["run_id"], status=ReviewStatus.PENDING)
+        state["review_requests"] = [
+            {
+                "review_id": review.review_id,
+                "task_id": review.task_id,
+                "agent_id": review.agent_id,
+                "status": review.status,
+                "summary": review.summary,
+            }
+            for review in reviews
+        ]
         return state
+
+    def _save_checkpoint(self, state: AlvisRunState, next_node: str) -> None:
+        if "run_id" not in state:
+            return
+        self.deps.services.save_checkpoint(
+            run_id=state["run_id"],
+            thread_id=state["run_id"],
+            next_node=next_node,
+            state=dict(state),
+        )
+
+    def _execute_from_node(self, state: AlvisRunState, node_name: str) -> AlvisRunState:
+        current = node_name
+        while True:
+            if current in {"wait_for_updates", "evaluate_progress", "synthesize_result"}:
+                state = self._refresh_state_from_db(state)
+            state = getattr(self, current)(state)
+            next_node = self._determine_next_node(current, state)
+            if next_node is None:
+                if "run_id" in state:
+                    self.deps.services.clear_checkpoint(state["run_id"])
+                return state
+            self._save_checkpoint(state, next_node)
+            if current == "evaluate_progress" and next_node in {"await_review_resolution", "wait_for_updates"}:
+                if next_node == "await_review_resolution":
+                    self.deps.services.finalize_run(
+                        state["run_id"],
+                        RunStatus.WAITING_REVIEW,
+                        "Run is waiting for review approvals before final synthesis.",
+                    )
+                else:
+                    self.deps.services.finalize_run(
+                        state["run_id"],
+                        RunStatus.RUNNING,
+                        "Run is still in progress and waiting for more agent output.",
+                    )
+                return state
+            current = next_node
+
+    def _determine_next_node(self, current: str, state: AlvisRunState) -> str | None:
+        if current == "evaluate_progress":
+            if state["status"] == RunStatus.WAITING_REVIEW.value:
+                return "await_review_resolution"
+            if state["status"] == RunStatus.RUNNING.value:
+                return "wait_for_updates"
+            return "synthesize_result"
+        if current == "synthesize_result":
+            return None
+        return self.NODE_ORDER[current]
 
     def ingest_request(self, state: AlvisRunState) -> AlvisRunState:
         team_id = state["team_id"]
@@ -153,7 +250,6 @@ class Supervisor:
         for assignment in state["assignments"]:
             task = self.deps.services.get_task(assignment["task_id"])
             agent = self.deps.services.get_agent(assignment["agent_id"])
-            self.deps.services.assign_task(task.task_id, agent.agent_id)
             contract = TaskContract(
                 task_id=task.task_id,
                 role=agent.role,
@@ -172,14 +268,21 @@ class Supervisor:
                 ],
                 context={"team_id": state["team_id"], "run_id": state["run_id"]},
             )
-            prompt = self.deps.services.dispatch_task(agent.agent_id, contract)
+            dispatch_gate = self.deps.services.can_dispatch_task(task.task_id, agent.agent_id)
+            if not dispatch_gate.ok:
+                continue
+            self.deps.services.assign_task(task.task_id, agent.agent_id)
+            dispatch = self.deps.services.dispatch_task(agent.agent_id, contract)
+            if not dispatch.ok:
+                self.deps.services.update_task(task.task_id, status=TaskStatus.BLOCKED.value, result_summary=dispatch.reason)
+                continue
             self.deps.services.append_event(
                 team_id=state["team_id"],
                 run_id=state["run_id"],
                 agent_id=agent.agent_id,
                 task_id=task.task_id,
                 event_type=event_type_name(EventType.AGENT_PROMPT_SENT),
-                payload=event_payload("Task dispatched", prompt=prompt, task_title=task.title),
+                payload=event_payload("Task dispatched", prompt=dispatch.prompt, task_title=task.title),
             )
         return state
 
@@ -190,12 +293,39 @@ class Supervisor:
 
     def evaluate_progress(self, state: AlvisRunState) -> AlvisRunState:
         gate = ReviewGate()
+        active = []
         completed = []
         blocked = []
         reviews = []
         for task_state in state["tasks"]:
             task = self.deps.services.get_task(task_state["task_id"])
             output = self.deps.services.get_task_output(task.task_id)
+            agent = self.deps.services.get_agent(task.agent_id) if task.agent_id else None
+
+            if task.status == TaskStatus.BLOCKED.value:
+                blocked.append(
+                    {
+                        "task_id": task.task_id,
+                        "agent_id": task.agent_id,
+                        "title": task.title,
+                        "goal": task.goal,
+                        "status": TaskStatus.BLOCKED.value,
+                    }
+                )
+                continue
+
+            if not output and agent and agent.tmux_pane:
+                active.append(
+                    {
+                        "task_id": task.task_id,
+                        "agent_id": task.agent_id,
+                        "title": task.title,
+                        "goal": task.goal,
+                        "status": task.status,
+                    }
+                )
+                continue
+
             summary = output.summary if output else f"Task {task.title} dispatched and awaiting Codex output."
             changed_files = output.changed_files if output else []
             risk_flags = output.risk_flags if output else []
@@ -255,9 +385,12 @@ class Supervisor:
                 )
         state["completed_tasks"] = completed
         state["blocked_tasks"] = blocked
+        state["active_tasks"] = active
         state["review_requests"] = reviews
         if reviews:
             state["status"] = RunStatus.WAITING_REVIEW.value
+        elif active:
+            state["status"] = RunStatus.RUNNING.value
         elif blocked:
             state["status"] = RunStatus.FAILED.value
         else:
@@ -268,6 +401,10 @@ class Supervisor:
         if state["review_requests"]:
             final = "Run is waiting for review approvals before final synthesis."
             status = RunStatus.WAITING_REVIEW
+        elif state["active_tasks"]:
+            active_titles = ", ".join(task["title"] for task in state["active_tasks"])
+            final = f"Run is still in progress. Waiting on tasks: {active_titles}."
+            status = RunStatus.RUNNING
         elif state["blocked_tasks"]:
             blocked_titles = ", ".join(task["title"] for task in state["blocked_tasks"])
             final = f"Run is blocked. Tasks requiring attention: {blocked_titles}."

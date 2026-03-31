@@ -4,6 +4,7 @@ from fastapi import FastAPI, HTTPException
 
 from app.bootstrap import bootstrap_services
 from app.enums import ReviewStatus
+from app.graph.supervisor import Supervisor, SupervisorDeps
 
 
 def create_app() -> FastAPI:
@@ -58,7 +59,8 @@ def create_app() -> FastAPI:
         review = services.resolve_review(review_id, approved=True)
         if not review:
             raise HTTPException(status_code=404, detail="review not found")
-        return {"review_id": review.review_id, "status": review.status}
+        state = Supervisor(SupervisorDeps(services=services)).resume(review.run_id)
+        return {"review_id": review.review_id, "status": review.status, "run_state": state}
 
     @app.post("/reviews/{review_id}/reject")
     def reject(review_id: str):

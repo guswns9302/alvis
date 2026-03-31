@@ -1,9 +1,19 @@
 from __future__ import annotations
 
 import subprocess
+from dataclasses import dataclass
 from pathlib import Path
 
 from app.logging import get_logger
+
+
+@dataclass
+class WorktreeState:
+    path: Path
+    branch: str | None
+    exists: bool
+    clean: bool
+    changed_files: list[str]
 
 
 class WorktreeManager:
@@ -46,3 +56,63 @@ class WorktreeManager:
             text=True,
         )
         return result.stdout.strip()
+
+    def status_lines(self, path: Path) -> list[str]:
+        if not path.exists():
+            return []
+        result = subprocess.run(
+            ["git", "-C", str(path), "status", "--porcelain"],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        return [line.rstrip() for line in result.stdout.splitlines() if line.strip()]
+
+    def changed_files(self, path: Path) -> list[str]:
+        files = []
+        for line in self.status_lines(path):
+            if len(line) < 4:
+                continue
+            file_path = line[3:].strip()
+            if " -> " in file_path:
+                file_path = file_path.split(" -> ", 1)[1].strip()
+            files.append(file_path)
+        return files
+
+    def current_branch(self, path: Path) -> str | None:
+        if not path.exists():
+            return None
+        result = subprocess.run(
+            ["git", "-C", str(path), "branch", "--show-current"],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        branch = result.stdout.strip()
+        return branch or None
+
+    def inspect(self, path: Path) -> WorktreeState:
+        exists = path.exists()
+        changed_files = self.changed_files(path) if exists else []
+        return WorktreeState(
+            path=path,
+            branch=self.current_branch(path) if exists else None,
+            exists=exists,
+            clean=not changed_files,
+            changed_files=changed_files,
+        )
+
+    def remove(self, path: Path) -> None:
+        if not path.exists():
+            return
+        cmd = [
+            "git",
+            "-C",
+            str(self.repo_root),
+            "worktree",
+            "remove",
+            "--force",
+            str(path),
+        ]
+        self.log.info("worktree.remove", cmd=cmd)
+        subprocess.run(cmd, check=True, capture_output=True, text=True)

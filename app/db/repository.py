@@ -11,6 +11,7 @@ from app.db.models import (
     EventModel,
     ReviewRequestModel,
     RunModel,
+    RunCheckpointModel,
     SessionModel,
     TaskAssignmentModel,
     TaskModel,
@@ -85,6 +86,9 @@ class Repository:
 
     def get_run(self, run_id: str) -> RunModel | None:
         return self.session.get(RunModel, run_id)
+
+    def get_checkpoint(self, run_id: str) -> RunCheckpointModel | None:
+        return self.session.get(RunCheckpointModel, run_id)
 
     def list_team_runs(self, team_id: str) -> list[RunModel]:
         stmt = select(RunModel).where(RunModel.team_id == team_id).order_by(RunModel.created_at.desc())
@@ -165,6 +169,9 @@ class Repository:
             stmt = stmt.where(ReviewRequestModel.status == status.value)
         return list(self.session.scalars(stmt))
 
+    def get_review(self, review_id: str) -> ReviewRequestModel | None:
+        return self.session.get(ReviewRequestModel, review_id)
+
     def resolve_review(self, review: ReviewRequestModel, approved: bool) -> ReviewRequestModel:
         review.status = ReviewStatus.APPROVED.value if approved else ReviewStatus.REJECTED.value
         review.resolved_at = utcnow()
@@ -240,6 +247,31 @@ class Repository:
         self.session.add(run)
         self.session.flush()
         return run
+
+    def save_checkpoint(self, run_id: str, thread_id: str, next_node: str, state: dict) -> RunCheckpointModel:
+        checkpoint = self.get_checkpoint(run_id)
+        if checkpoint is None:
+            checkpoint = RunCheckpointModel(
+                run_id=run_id,
+                thread_id=thread_id,
+                next_node=next_node,
+                state=state,
+                updated_at=utcnow(),
+            )
+        else:
+            checkpoint.thread_id = thread_id
+            checkpoint.next_node = next_node
+            checkpoint.state = state
+            checkpoint.updated_at = utcnow()
+        self.session.add(checkpoint)
+        self.session.flush()
+        return checkpoint
+
+    def delete_checkpoint(self, run_id: str) -> None:
+        checkpoint = self.get_checkpoint(run_id)
+        if checkpoint is not None:
+            self.session.delete(checkpoint)
+            self.session.flush()
 
     def find_stalled_agents(self, threshold_seconds: int) -> list[AgentModel]:
         cutoff = utcnow().timestamp() - threshold_seconds

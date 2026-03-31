@@ -51,6 +51,16 @@ class RunModel(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
 
+class RunCheckpointModel(Base):
+    __tablename__ = "run_checkpoints"
+
+    run_id: Mapped[str] = mapped_column(ForeignKey("runs.run_id"), primary_key=True)
+    thread_id: Mapped[str] = mapped_column(String, index=True)
+    next_node: Mapped[str] = mapped_column(String)
+    state: Mapped[dict] = mapped_column(JSON, default=dict)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+
 class TaskModel(Base):
     __tablename__ = "tasks"
 

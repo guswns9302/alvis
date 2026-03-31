@@ -26,6 +26,7 @@ class AlvisRunState(TypedDict, total=False):
     user_request: str
     tasks: list[TaskState]
     assignments: list[dict]
+    active_tasks: list[TaskState]
     completed_tasks: list[TaskState]
     blocked_tasks: list[TaskState]
     review_requests: list[ReviewState]

@@ -38,7 +38,7 @@
 - [x] DB 초기화 루틴 작성
 - [x] repository 계층 작성
 - [ ] migration 전략 구체화
-- [ ] LangGraph checkpointer 영속 저장 연결
+- [x] LangGraph checkpointer 영속 저장 연결
 
 ### Phase 3. 세션 및 실행 계층
 
@@ -56,8 +56,8 @@
 - [x] worktree manager 작성
 - [x] branch naming 규칙 구현
 - [x] worktree 생성 로직 구현
-- [ ] worktree 정리 로직 구현
-- [ ] 충돌 감지 정책 구현
+- [x] worktree 정리 로직 구현
+- [x] 충돌 감지 정책 구현
 
 ### Phase 5. 오케스트레이션 계층
 
@@ -69,7 +69,7 @@
 - [x] review 생성 초안 작성
 - [x] wait/update 루프 초안 구현
 - [x] 실제 Codex 출력 기반 상태 전이 초안 구현
-- [ ] interrupt/resume 정교화
+- [x] interrupt/resume 정교화
 
 ### Phase 6. Review Gate
 
@@ -84,17 +84,19 @@
 - [x] `alvis team create`
 - [x] `alvis team start`
 - [x] `alvis run`
+- [x] `alvis resume`
 - [x] `alvis status`
 - [x] `alvis review list`
 - [x] `alvis review approve`
 - [x] `alvis review reject`
 - [x] `alvis logs`
 - [x] `alvis recover`
+- [x] `alvis cleanup`
 - [x] `alvis tmux-attach`
 - [x] `alvis bootstrap`
 - [x] `alvis collect-outputs`
 - [x] 최소 FastAPI surface 작성
-- [ ] CLI 출력 포맷 개선
+- [x] CLI 출력 포맷 개선
 
 ### Phase 8. 복구와 운영 안정성
 
@@ -102,7 +104,7 @@
 - [x] recover 명령 초안
 - [x] tmux pane과 실제 프로세스 상태 reconciliation 초안
 - [x] orphaned task 자동 정정 초안
-- [ ] retry 정책 구현
+- [x] retry 정책 구현
 
 ### Phase 9. 테스트와 검증
 
@@ -115,16 +117,16 @@
 - [x] recovery reconciliation 테스트
 - [x] repository 테스트 확장
 - [x] tmux manager 실제 통합 테스트
-- [ ] e2e 시나리오 테스트
+- [x] e2e 시나리오 테스트
+- [x] worktree cleanup / conflict / retry 테스트
 
 ## 3. 남은 핵심 구현 항목
 
 다음 항목은 실제 운영 가능한 수준으로 가기 위해 우선적으로 마무리해야 한다.
 
-1. LangGraph interrupt/resume 정교화
-2. e2e 시나리오 테스트
-3. CLI 출력 개선
-4. migration/checkpointer 정리
+1. migration 전략 구체화
+   현재는 로컬 개인용 기준으로 DB 초기화 허용 정책을 사용한다.
+   정식 migration 체계는 후속 과제로 미룬다.
 
 ## 4. 운영 기준
 
@@ -138,7 +140,5 @@
 
 가장 먼저 이어서 구현할 항목은 다음 순서로 진행한다.
 
-1. LangGraph interrupt/resume 정교화
-2. e2e 시나리오 테스트
-3. CLI 출력 개선
-4. migration/checkpointer 정리
+1. migration 전략 구체화
+   현재는 deferred 상태다.
