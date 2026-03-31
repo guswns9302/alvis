@@ -12,10 +12,27 @@ require_cmd() {
   fi
 }
 
+ensure_tmux() {
+  if command -v tmux >/dev/null 2>&1; then
+    return 0
+  fi
+  echo "tmux is not installed. attempting Homebrew install..."
+  if ! command -v brew >/dev/null 2>&1; then
+    echo "tmux is required, and Homebrew is not available to install it automatically." >&2
+    echo "Install Homebrew first or install tmux manually, then rerun install.sh." >&2
+    exit 1
+  fi
+  brew install tmux
+}
+
 require_cmd python3
 require_cmd curl
 require_cmd tar
-require_cmd tmux
+ensure_tmux
+require_cmd codex
+
+TMUX_PATH="$(command -v tmux)"
+CODEX_PATH="$(command -v codex)"
 
 mkdir -p "$ALVIS_HOME"
 TMP_DIR="$(mktemp -d)"
@@ -51,6 +68,8 @@ cat > "$ALVIS_HOME/bin/alvis" <<EOF
 #!/usr/bin/env bash
 set -euo pipefail
 export ALVIS_HOME="$ALVIS_HOME"
+export ALVIS_TMUX_PATH="$TMUX_PATH"
+export ALVIS_CODEX_COMMAND="$CODEX_PATH"
 exec "$ALVIS_HOME/venv/bin/alvis" "\$@"
 EOF
 chmod +x "$ALVIS_HOME/bin/alvis"
@@ -63,7 +82,9 @@ cat > "$ALVIS_HOME/install.json" <<EOF
 {
   "version": "$TAG_NAME",
   "release_repo": "$ALVIS_RELEASE_REPO",
-  "installed_via": "install.sh"
+  "installed_via": "install.sh",
+  "tmux_path": "$TMUX_PATH",
+  "codex_command": "$CODEX_PATH"
 }
 EOF
 

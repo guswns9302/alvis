@@ -157,6 +157,8 @@ def doctor(json_output: bool = typer.Option(False, "--json")):
         "app_home": str(settings.app_home),
         "data_dir": str(settings.data_dir),
         "daemon": daemon,
+        "tmux_path": settings.tmux_path,
+        "codex_command": settings.codex_command,
         "tmux_available": subprocess.run(["which", "tmux"], check=False, capture_output=True, text=True).returncode == 0,
         "codex_available": subprocess.run(["which", "codex"], check=False, capture_output=True, text=True).returncode == 0,
     }
@@ -170,6 +172,8 @@ def doctor(json_output: bool = typer.Option(False, "--json")):
                 f"app_home: {data['app_home']}",
                 f"data_dir: {data['data_dir']}",
                 f"daemon: {data['daemon'].get('status', 'unknown')}",
+                f"tmux_path: {data.get('tmux_path') or '-'}",
+                f"codex_command: {data.get('codex_command') or '-'}",
                 f"tmux: {'ok' if data['tmux_available'] else 'missing'}",
                 f"codex: {'ok' if data['codex_available'] else 'missing'}",
             ]
@@ -200,16 +204,27 @@ def create_team(
             payload["start_result"] = services.start_team(resolved_team_id)
         else:
             client = _ensure_daemon_running()
-            payload = client.request_json(
-                "POST",
-                "/teams/create",
-                payload={
-                    **client.with_workspace(_workspace_root()),
-                    "team_id": resolved_team_id,
-                    "worker_1_role": resolved_worker_1_role,
-                    "worker_2_role": resolved_worker_2_role,
-                },
-            )
+            try:
+                payload = client.request_json(
+                    "POST",
+                    "/teams/create",
+                    payload={
+                        **client.with_workspace(_workspace_root()),
+                        "team_id": resolved_team_id,
+                        "worker_1_role": resolved_worker_1_role,
+                        "worker_2_role": resolved_worker_2_role,
+                    },
+                )
+            except RuntimeError as exc:
+                message = str(exc)
+                if "tmux_unavailable" in message or "tmux is not installed" in message:
+                    typer.secho(
+                        "tmux를 daemon이 찾지 못했습니다. `alvis doctor`로 경로를 확인하고 `alvis daemon restart`를 실행하세요.",
+                        fg=typer.colors.RED,
+                        err=True,
+                    )
+                    raise typer.Exit(code=1) from exc
+                raise
         _emit(payload, json_output, format_team_create)
         start_result = payload.get("start_result", {})
         if not no_attach and not json_output and start_result.get("all_ready"):

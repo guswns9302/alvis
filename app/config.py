@@ -21,6 +21,7 @@ class Settings(BaseModel):
     tmux_session_prefix: str = "alvis"
     default_worker_count: int = 2
     codex_command: str = "codex"
+    tmux_path: str | None = None
     heartbeat_timeout_seconds: int = 120
     review_retry_threshold: int = 2
     daemon_host: str = "127.0.0.1"
@@ -61,6 +62,7 @@ def get_settings(workspace_root: str | Path | None = None) -> Settings:
         worktree_root=worktree_root,
         tmux_session_prefix=os.getenv("ALVIS_TMUX_PREFIX", "alvis"),
         codex_command=os.getenv("ALVIS_CODEX_COMMAND", "codex"),
+        tmux_path=os.getenv("ALVIS_TMUX_PATH"),
         daemon_host=os.getenv("ALVIS_DAEMON_HOST", "127.0.0.1"),
         daemon_port=int(os.getenv("ALVIS_DAEMON_PORT", "35731")),
         release_repo=os.getenv("ALVIS_RELEASE_REPO", "guswns9302/alvis"),

@@ -36,7 +36,7 @@ class AlvisServices:
     def __init__(self, settings: Settings, session_factory: sessionmaker):
         self.settings = settings
         self.session_factory = session_factory
-        self.tmux = TmuxManager(settings.tmux_session_prefix)
+        self.tmux = TmuxManager(settings.tmux_session_prefix, settings.tmux_path)
         self.codex = CodexAdapter(
             self.tmux,
             settings.codex_command,

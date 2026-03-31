@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -16,6 +17,31 @@ class LaunchdManager:
     @property
     def label(self) -> str:
         return self.settings.launchd_label
+
+    def _daemon_path(self) -> str:
+        path_entries = []
+        tmux_path = self.settings.tmux_path or os.getenv("ALVIS_TMUX_PATH")
+        codex_command = self.settings.codex_command
+        if tmux_path:
+            path_entries.append(str(Path(tmux_path).expanduser().resolve().parent))
+        codex_resolved = shutil.which(codex_command)
+        if codex_resolved:
+            path_entries.append(str(Path(codex_resolved).resolve().parent))
+        path_entries.extend(
+            [
+                "/opt/homebrew/bin",
+                "/usr/local/bin",
+                "/usr/bin",
+                "/bin",
+                "/usr/sbin",
+                "/sbin",
+            ]
+        )
+        ordered = []
+        for entry in path_entries:
+            if entry not in ordered:
+                ordered.append(entry)
+        return ":".join(ordered)
 
     def plist_contents(self) -> str:
         ensure_runtime_dirs(self.settings)
@@ -37,10 +63,16 @@ class LaunchdManager:
   <dict>
     <key>ALVIS_HOME</key>
     <string>{self.settings.app_home}</string>
+    <key>PATH</key>
+    <string>{self._daemon_path()}</string>
     <key>ALVIS_DAEMON_HOST</key>
     <string>{self.settings.daemon_host}</string>
     <key>ALVIS_DAEMON_PORT</key>
     <string>{self.settings.daemon_port}</string>
+    <key>ALVIS_TMUX_PATH</key>
+    <string>{self.settings.tmux_path or ""}</string>
+    <key>ALVIS_CODEX_COMMAND</key>
+    <string>{self.settings.codex_command}</string>
   </dict>
   <key>RunAtLoad</key>
   <true/>

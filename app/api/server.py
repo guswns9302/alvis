@@ -5,6 +5,7 @@ from pydantic import BaseModel
 
 from app.bootstrap import bootstrap_services
 from app.graph.supervisor import Supervisor, SupervisorDeps
+from app.sessions.tmux_manager import TmuxUnavailableError
 from app.version import __version__
 
 
@@ -53,24 +54,34 @@ def create_app() -> FastAPI:
     @app.post("/teams/create")
     def create_team(payload: TeamCreateRequest):
         services = services_for(payload.workspace_root)
-        team = services.create_team(payload.team_id, payload.worker_1_role, payload.worker_2_role)
-        start_result = services.start_team(payload.team_id)
-        return {
-            "team_id": team.team_id,
-            "workers": [
-                {
-                    "agent_id": f"{payload.team_id}-worker-1",
-                    "role": payload.worker_1_role.split(":", 1)[0],
-                    "role_alias": payload.worker_1_role.split(":", 1)[1] if ":" in payload.worker_1_role else payload.worker_1_role,
+        try:
+            team = services.create_team(payload.team_id, payload.worker_1_role, payload.worker_2_role)
+            start_result = services.start_team(payload.team_id)
+            return {
+                "team_id": team.team_id,
+                "workers": [
+                    {
+                        "agent_id": f"{payload.team_id}-worker-1",
+                        "role": payload.worker_1_role.split(":", 1)[0],
+                        "role_alias": payload.worker_1_role.split(":", 1)[1] if ":" in payload.worker_1_role else payload.worker_1_role,
+                    },
+                    {
+                        "agent_id": f"{payload.team_id}-worker-2",
+                        "role": payload.worker_2_role.split(":", 1)[0],
+                        "role_alias": payload.worker_2_role.split(":", 1)[1] if ":" in payload.worker_2_role else payload.worker_2_role,
+                    },
+                ],
+                "start_result": start_result,
+            }
+        except TmuxUnavailableError as exc:
+            raise HTTPException(
+                status_code=503,
+                detail={
+                    "error_code": "tmux_unavailable",
+                    "detail": str(exc),
+                    "hint": "tmux 경로를 daemon이 찾지 못했습니다. `alvis doctor`와 `alvis daemon restart`를 실행하거나 install.sh를 다시 실행하세요.",
                 },
-                {
-                    "agent_id": f"{payload.team_id}-worker-2",
-                    "role": payload.worker_2_role.split(":", 1)[0],
-                    "role_alias": payload.worker_2_role.split(":", 1)[1] if ":" in payload.worker_2_role else payload.worker_2_role,
-                },
-            ],
-            "start_result": start_result,
-        }
+            ) from exc
 
     @app.post("/teams/start")
     def start_team(payload: TeamRequest):

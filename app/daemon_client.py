@@ -42,11 +42,11 @@ class DaemonClient:
             with request.urlopen(req, timeout=5) as response:
                 body = response.read().decode("utf-8")
                 return json.loads(body) if body else None
-        except error.URLError as exc:
-            raise DaemonUnavailableError(str(exc)) from exc
         except error.HTTPError as exc:
             detail = exc.read().decode("utf-8")
             raise RuntimeError(detail or str(exc)) from exc
+        except error.URLError as exc:
+            raise DaemonUnavailableError(str(exc)) from exc
 
     def health(self) -> dict:
         return self.request_json("GET", "/health")
