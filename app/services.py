@@ -17,7 +17,7 @@ from app.enums import AgentRole, AgentStatus, EventType, InteractionStatus, Revi
 from app.logging import get_logger
 from app.runtime.output_collector import OutputCollector
 from app.schemas import AgentOutput, DispatchResult, ReplanResult, TaskContract
-from app.sessions.tmux_manager import TmuxManager
+from app.sessions.tmux_manager import TmuxManager, TmuxUnavailableError
 from app.workspace.worktree_manager import WorktreeManager
 
 
@@ -91,6 +91,35 @@ class AlvisServices:
                 ),
             )
             return team
+
+    def daemon_health(self) -> dict:
+        tmux_path = self.tmux.executable()
+        return {
+            "status": "ok",
+            "tmux_path": tmux_path,
+            "tmux_available": tmux_path is not None,
+            "codex_command": self.settings.codex_command,
+            "workspace_root": str(self.settings.repo_root),
+            "data_dir": str(self.settings.data_dir),
+        }
+
+    def provision_team(self, team_id: str, worker_1_role: str, worker_2_role: str):
+        tmux_path = self.tmux.executable()
+        if not tmux_path:
+            raise TmuxUnavailableError("tmux is not installed or not available on PATH")
+        created = False
+        try:
+            team = self.create_team(team_id, worker_1_role, worker_2_role)
+            created = True
+            start_result = self.start_team(team_id)
+            return {"team": team, "start_result": start_result}
+        except Exception:
+            if created:
+                try:
+                    self.remove_team(team_id)
+                except Exception as cleanup_exc:  # pragma: no cover - defensive runtime logging
+                    self.log.warning("team.provision_cleanup_failed", team_id=team_id, error=str(cleanup_exc))
+            raise
 
     def start_team(self, team_id: str):
         with session_scope(self.session_factory) as session:
@@ -1500,7 +1529,10 @@ class AlvisServices:
 
     def remove_team(self, team_id: str) -> dict:
         session_name = self.tmux.team_session_name(team_id)
-        self.tmux.kill_session(session_name)
+        try:
+            self.tmux.kill_session(session_name)
+        except TmuxUnavailableError:
+            self.log.warning("team.remove.tmux_unavailable", team_id=team_id, session_name=session_name)
         runtime_dir = self.codex.runtime_dir / "agents"
         removed_agent_dirs = []
         with session_scope(self.session_factory) as session:

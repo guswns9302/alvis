@@ -1,6 +1,8 @@
 import time
 from uuid import uuid4
 
+import pytest
+
 from app.config import Settings, ensure_runtime_dirs
 from app.db.base import create_session_factory, session_scope
 from app.db.init_db import init_db
@@ -122,3 +124,21 @@ def test_recover_marks_missing_pane_with_real_tmux(tmp_path):
         assert services.get_task(task_id).status == TaskStatus.BLOCKED.value
     finally:
         services.tmux.kill_session(session_name)
+
+
+def test_provision_team_rolls_back_partial_create(tmp_path, monkeypatch):
+    services = create_test_services(tmp_path)
+    team_id = f"tmux-provision-{uuid4().hex[:6]}"
+
+    def fail_start(_: str):
+        raise RuntimeError("synthetic start failure")
+
+    monkeypatch.setattr(services, "start_team", fail_start)
+
+    with pytest.raises(RuntimeError, match="synthetic start failure"):
+        services.provision_team(team_id, "implementer:builder", "reviewer:checker")
+
+    with session_scope(services.session_factory) as session:
+        repo = Repository(session)
+        assert repo.get_team(team_id) is None
+        assert repo.list_agents(team_id) == []

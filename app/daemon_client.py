@@ -11,6 +11,17 @@ class DaemonUnavailableError(RuntimeError):
     pass
 
 
+class DaemonHttpError(RuntimeError):
+    def __init__(self, status_code: int, detail):
+        self.status_code = status_code
+        self.detail = detail
+        if isinstance(detail, dict):
+            message = detail.get("detail") or detail.get("error_code") or f"daemon http {status_code}"
+        else:
+            message = str(detail)
+        super().__init__(message)
+
+
 class DaemonClient:
     def __init__(self, settings: Settings):
         self.settings = settings
@@ -43,13 +54,17 @@ class DaemonClient:
                 body = response.read().decode("utf-8")
                 return json.loads(body) if body else None
         except error.HTTPError as exc:
-            detail = exc.read().decode("utf-8")
-            raise RuntimeError(detail or str(exc)) from exc
+            body = exc.read().decode("utf-8")
+            try:
+                detail = json.loads(body) if body else {"detail": str(exc)}
+            except json.JSONDecodeError:
+                detail = body or str(exc)
+            raise DaemonHttpError(exc.code, detail) from exc
         except error.URLError as exc:
             raise DaemonUnavailableError(str(exc)) from exc
 
-    def health(self) -> dict:
-        return self.request_json("GET", "/health")
+    def health(self, workspace_root: Path | None = None) -> dict:
+        return self.request_json("GET", "/health", query=self.with_workspace(workspace_root))
 
     def with_workspace(self, workspace_root: Path | None = None) -> dict[str, str]:
         return {"workspace_root": str((workspace_root or Path.cwd()).resolve())}

@@ -1,7 +1,8 @@
 from __future__ import annotations
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from pydantic import BaseModel
+from starlette.responses import JSONResponse
 
 from app.bootstrap import bootstrap_services
 from app.graph.supervisor import Supervisor, SupervisorDeps
@@ -43,9 +44,52 @@ def create_app() -> FastAPI:
     def services_for(workspace_root: str | None = None):
         return bootstrap_services(workspace_root)
 
+    @app.exception_handler(TmuxUnavailableError)
+    async def tmux_unavailable_handler(_: Request, exc: TmuxUnavailableError):
+        return JSONResponse(
+            status_code=503,
+            content={
+                "error_code": "tmux_unavailable",
+                "detail": str(exc),
+                "hint": "tmux 경로를 daemon이 찾지 못했습니다. `alvis doctor`와 `alvis daemon restart`를 실행하거나 install.sh를 다시 실행하세요.",
+            },
+        )
+
+    @app.exception_handler(ValueError)
+    async def value_error_handler(_: Request, exc: ValueError):
+        message = str(exc)
+        error_code = "invalid_request"
+        status_code = 400
+        hint = None
+        if "already exists" in message:
+            error_code = "team_exists"
+            status_code = 409
+            hint = "다른 팀 이름을 사용하거나 `alvis team remove <team_id>` 후 다시 시도하세요."
+        elif "not found" in message:
+            error_code = "not_found"
+            status_code = 404
+        return JSONResponse(
+            status_code=status_code,
+            content={
+                "error_code": error_code,
+                "detail": message,
+                "hint": hint,
+            },
+        )
+
     @app.get("/health")
-    def health():
-        return {"status": "ok", "version": __version__}
+    def health(workspace_root: str | None = None):
+        services = services_for(workspace_root)
+        diagnostics = services.daemon_health()
+        return {
+            "status": "ok",
+            "version": __version__,
+            "daemon_tmux_path": diagnostics["tmux_path"],
+            "daemon_tmux_available": diagnostics["tmux_available"],
+            "daemon_codex_command": diagnostics["codex_command"],
+            "daemon_workspace_root": diagnostics["workspace_root"],
+            "daemon_data_dir": diagnostics["data_dir"],
+        }
 
     @app.get("/version")
     def version():
@@ -54,34 +98,25 @@ def create_app() -> FastAPI:
     @app.post("/teams/create")
     def create_team(payload: TeamCreateRequest):
         services = services_for(payload.workspace_root)
-        try:
-            team = services.create_team(payload.team_id, payload.worker_1_role, payload.worker_2_role)
-            start_result = services.start_team(payload.team_id)
-            return {
-                "team_id": team.team_id,
-                "workers": [
-                    {
-                        "agent_id": f"{payload.team_id}-worker-1",
-                        "role": payload.worker_1_role.split(":", 1)[0],
-                        "role_alias": payload.worker_1_role.split(":", 1)[1] if ":" in payload.worker_1_role else payload.worker_1_role,
-                    },
-                    {
-                        "agent_id": f"{payload.team_id}-worker-2",
-                        "role": payload.worker_2_role.split(":", 1)[0],
-                        "role_alias": payload.worker_2_role.split(":", 1)[1] if ":" in payload.worker_2_role else payload.worker_2_role,
-                    },
-                ],
-                "start_result": start_result,
-            }
-        except TmuxUnavailableError as exc:
-            raise HTTPException(
-                status_code=503,
-                detail={
-                    "error_code": "tmux_unavailable",
-                    "detail": str(exc),
-                    "hint": "tmux 경로를 daemon이 찾지 못했습니다. `alvis doctor`와 `alvis daemon restart`를 실행하거나 install.sh를 다시 실행하세요.",
+        provisioned = services.provision_team(payload.team_id, payload.worker_1_role, payload.worker_2_role)
+        team = provisioned["team"]
+        start_result = provisioned["start_result"]
+        return {
+            "team_id": team.team_id,
+            "workers": [
+                {
+                    "agent_id": f"{payload.team_id}-worker-1",
+                    "role": payload.worker_1_role.split(":", 1)[0],
+                    "role_alias": payload.worker_1_role.split(":", 1)[1] if ":" in payload.worker_1_role else payload.worker_1_role,
                 },
-            ) from exc
+                {
+                    "agent_id": f"{payload.team_id}-worker-2",
+                    "role": payload.worker_2_role.split(":", 1)[0],
+                    "role_alias": payload.worker_2_role.split(":", 1)[1] if ":" in payload.worker_2_role else payload.worker_2_role,
+                },
+            ],
+            "start_result": start_result,
+        }
 
     @app.post("/teams/start")
     def start_team(payload: TeamRequest):

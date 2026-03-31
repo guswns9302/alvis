@@ -22,7 +22,7 @@ from app.cli_formatters import (
     format_team_start,
 )
 from app.config import get_settings
-from app.daemon_client import DaemonClient, DaemonUnavailableError
+from app.daemon_client import DaemonClient, DaemonHttpError, DaemonUnavailableError
 from app.graph.supervisor import Supervisor, SupervisorDeps
 from app.launchd import LaunchdManager
 from app.logging import configure_logging
@@ -148,7 +148,7 @@ def doctor(json_output: bool = typer.Option(False, "--json")):
     settings = get_settings(_workspace_root())
     client = _daemon_client()
     try:
-        daemon = client.health()
+        daemon = client.health(_workspace_root())
     except DaemonUnavailableError:
         daemon = {"status": "unreachable"}
     payload = {
@@ -157,10 +157,10 @@ def doctor(json_output: bool = typer.Option(False, "--json")):
         "app_home": str(settings.app_home),
         "data_dir": str(settings.data_dir),
         "daemon": daemon,
-        "tmux_path": settings.tmux_path,
-        "codex_command": settings.codex_command,
-        "tmux_available": subprocess.run(["which", "tmux"], check=False, capture_output=True, text=True).returncode == 0,
-        "codex_available": subprocess.run(["which", "codex"], check=False, capture_output=True, text=True).returncode == 0,
+        "shell_tmux_path": settings.tmux_path,
+        "shell_codex_command": settings.codex_command,
+        "shell_tmux_available": subprocess.run(["which", "tmux"], check=False, capture_output=True, text=True).returncode == 0,
+        "shell_codex_available": subprocess.run(["which", "codex"], check=False, capture_output=True, text=True).returncode == 0,
     }
     _emit(
         payload,
@@ -172,10 +172,13 @@ def doctor(json_output: bool = typer.Option(False, "--json")):
                 f"app_home: {data['app_home']}",
                 f"data_dir: {data['data_dir']}",
                 f"daemon: {data['daemon'].get('status', 'unknown')}",
-                f"tmux_path: {data.get('tmux_path') or '-'}",
-                f"codex_command: {data.get('codex_command') or '-'}",
-                f"tmux: {'ok' if data['tmux_available'] else 'missing'}",
-                f"codex: {'ok' if data['codex_available'] else 'missing'}",
+                f"shell tmux_path: {data.get('shell_tmux_path') or '-'}",
+                f"shell codex_command: {data.get('shell_codex_command') or '-'}",
+                f"shell tmux: {'ok' if data['shell_tmux_available'] else 'missing'}",
+                f"shell codex: {'ok' if data['shell_codex_available'] else 'missing'}",
+                f"daemon tmux_path: {data['daemon'].get('daemon_tmux_path') or '-'}",
+                f"daemon codex_command: {data['daemon'].get('daemon_codex_command') or '-'}",
+                f"daemon tmux: {'ok' if data['daemon'].get('daemon_tmux_available') else 'missing'}",
             ]
         ),
     )
@@ -199,9 +202,9 @@ def create_team(
         payload = _create_team_payload(resolved_team_id, resolved_worker_1_role, resolved_worker_2_role)
         if _direct_mode():
             services = _services()
-            team = services.create_team(resolved_team_id, resolved_worker_1_role, resolved_worker_2_role)
-            payload["team_id"] = team.team_id
-            payload["start_result"] = services.start_team(resolved_team_id)
+            provisioned = services.provision_team(resolved_team_id, resolved_worker_1_role, resolved_worker_2_role)
+            payload["team_id"] = provisioned["team"].team_id
+            payload["start_result"] = provisioned["start_result"]
         else:
             client = _ensure_daemon_running()
             try:
@@ -215,11 +218,21 @@ def create_team(
                         "worker_2_role": resolved_worker_2_role,
                     },
                 )
-            except RuntimeError as exc:
-                message = str(exc)
-                if "tmux_unavailable" in message or "tmux is not installed" in message:
+            except DaemonHttpError as exc:
+                detail = exc.detail if isinstance(exc.detail, dict) else {"detail": str(exc.detail)}
+                error_code = detail.get("error_code")
+                message = detail.get("detail") or str(exc)
+                hint = detail.get("hint")
+                if error_code == "tmux_unavailable":
                     typer.secho(
-                        "tmux를 daemon이 찾지 못했습니다. `alvis doctor`로 경로를 확인하고 `alvis daemon restart`를 실행하세요.",
+                        hint or "tmux를 daemon이 찾지 못했습니다. `alvis doctor`로 경로를 확인하고 `alvis daemon restart`를 실행하세요.",
+                        fg=typer.colors.RED,
+                        err=True,
+                    )
+                    raise typer.Exit(code=1) from exc
+                if exc.status_code == 409 or error_code == "team_exists":
+                    typer.secho(
+                        message,
                         fg=typer.colors.RED,
                         err=True,
                     )
@@ -238,12 +251,20 @@ def create_team(
 
 @team_app.command("start")
 def start_team(team_id: str, json_output: bool = typer.Option(False, "--json")):
-    if _direct_mode():
-        result = _services().start_team(team_id)
-    else:
-        client = _ensure_daemon_running()
-        result = client.request_json("POST", "/teams/start", payload={**client.with_workspace(_workspace_root()), "team_id": team_id})
-    _emit(result, json_output, format_team_start)
+    try:
+        if _direct_mode():
+            result = _services().start_team(team_id)
+        else:
+            client = _ensure_daemon_running()
+            result = client.request_json("POST", "/teams/start", payload={**client.with_workspace(_workspace_root()), "team_id": team_id})
+        _emit(result, json_output, format_team_start)
+    except ValueError as exc:
+        typer.secho(str(exc), fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=1) from exc
+    except DaemonHttpError as exc:
+        detail = exc.detail if isinstance(exc.detail, dict) else {"detail": str(exc.detail)}
+        typer.secho(detail.get("detail") or str(exc), fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=1) from exc
 
 
 @team_app.command("remove")
@@ -257,6 +278,10 @@ def remove_team(team_id: str, json_output: bool = typer.Option(False, "--json"))
         _emit(result, json_output, format_team_remove)
     except ValueError as exc:
         typer.secho(str(exc), fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=1) from exc
+    except DaemonHttpError as exc:
+        detail = exc.detail if isinstance(exc.detail, dict) else {"detail": str(exc.detail)}
+        typer.secho(detail.get("detail") or str(exc), fg=typer.colors.RED, err=True)
         raise typer.Exit(code=1) from exc
 
 
