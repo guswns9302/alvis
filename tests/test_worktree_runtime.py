@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
+import subprocess
 import time
 from uuid import uuid4
 
@@ -28,6 +30,29 @@ def test_task_runner_build_invocation_normalizes_bare_codex(tmp_path):
     assert invocation[:4] == ["codex", "exec", "--color", "never"]
     assert "--output-schema" in invocation
     assert "--skip-git-repo-check" in invocation
+    assert invocation[-2:] == ["-o", str(output)]
+
+
+def test_run_noninteractive_codex_passes_prompt_as_argument_for_codex_exec(tmp_path, monkeypatch):
+    services = create_codex_services(tmp_path)
+    captured: dict[str, object] = {}
+
+    def fake_run(command, cwd=None, capture_output=None, text=None, input=None):
+        captured["command"] = command
+        captured["cwd"] = cwd
+        captured["input"] = input
+        return subprocess.CompletedProcess(command, 0, "", "")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    result, final_message, schema_output = services._run_noninteractive_codex("hello prompt", str(services.settings.repo_root))
+
+    assert result.returncode == 0
+    assert captured["input"] is None
+    assert captured["command"][-1] == "hello prompt"
+    assert captured["command"][:4] == ["codex", "exec", "--color", "never"]
+    assert final_message is None
+    assert schema_output is None
 
 
 def create_services(tmp_path: Path) -> AlvisServices:
@@ -48,6 +73,25 @@ def create_services(tmp_path: Path) -> AlvisServices:
     init_db(settings)
     session_factory = create_session_factory(settings)
     return AlvisServices(settings=settings, session_factory=session_factory)
+
+
+def create_codex_services(tmp_path: Path) -> AlvisServices:
+    repo_root = tmp_path / "project"
+    repo_root.mkdir(parents=True, exist_ok=True)
+    (repo_root / "README.md").write_text("shared root")
+    settings = Settings(
+        repo_root=repo_root,
+        data_dir=tmp_path / "data",
+        db_path=tmp_path / "data" / "alvis.db",
+        log_dir=tmp_path / "data" / "logs",
+        runtime_dir=tmp_path / "data" / "runtime",
+        worktree_root=tmp_path / "runtime-cache",
+        tmux_session_prefix=f"alvis-test-{uuid4().hex[:6]}",
+        codex_command="codex",
+    )
+    ensure_runtime_dirs(settings)
+    init_db(settings)
+    return AlvisServices(settings=settings, session_factory=create_session_factory(settings))
 
 
 def create_fake_runtime_services(tmp_path: Path) -> AlvisServices:
@@ -343,3 +387,81 @@ def test_codex_runtime_health_extracts_stdin_terminal_error(tmp_path):
 
     assert health["status"] == "exited"
     assert "stdin 계약" in health["error_summary"]
+
+
+def test_codex_runtime_health_extracts_no_prompt_error(tmp_path):
+    adapter = CodexAdapter(
+        codex_command="codex",
+        runtime_dir=tmp_path,
+    )
+    paths = adapter.session_paths("agent-no-prompt")
+    paths["state"].write_text('{"status":"exited","exit_code":1}')
+    paths["stderr"].write_text("No prompt provided. Either specify one as an argument or pipe the prompt into stdin.\n")
+
+    health = adapter.runtime_health("agent-no-prompt", pane_exists=True)
+
+    assert health["status"] == "exited"
+    assert "작업 프롬프트" in health["error_summary"]
+
+
+def test_real_codex_exec_smoke_uses_prompt_argument(tmp_path):
+    if os.getenv("ALVIS_REAL_CODEX_SMOKE") != "1":
+        return
+
+    schema = tmp_path / "schema.json"
+    output = tmp_path / "output.json"
+    schema.write_text(
+        json.dumps(
+            {
+                "type": "object",
+                "properties": {
+                    "status_signal": {"type": "string"},
+                    "summary": {"type": "string"},
+                    "question_for_leader": {"type": "array", "items": {"type": "string"}},
+                    "requested_context": {"type": "array", "items": {"type": "string"}},
+                    "followup_suggestion": {"type": "array", "items": {"type": "string"}},
+                    "dependency_note": {"type": "array", "items": {"type": "string"}},
+                    "changed_files": {"type": "array", "items": {"type": "string"}},
+                    "test_results": {"type": "array", "items": {"type": "string"}},
+                    "risk_flags": {"type": "array", "items": {"type": "string"}},
+                },
+                "required": [
+                    "status_signal",
+                    "summary",
+                    "question_for_leader",
+                    "requested_context",
+                    "followup_suggestion",
+                    "dependency_note",
+                    "changed_files",
+                    "test_results",
+                    "risk_flags",
+                ],
+                "additionalProperties": False,
+            }
+        )
+    )
+
+    prompt = (
+        'Return JSON with status_signal="done", summary="ok", and every array field empty.'
+    )
+    result = subprocess.run(
+        [
+            "codex",
+            "exec",
+            "--color",
+            "never",
+            "--skip-git-repo-check",
+            "--output-schema",
+            str(schema),
+            "-o",
+            str(output),
+            prompt,
+        ],
+        cwd=str(REPO_ROOT),
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert output.exists()
+    assert "No prompt provided" not in result.stderr

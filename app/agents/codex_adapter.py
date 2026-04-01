@@ -22,6 +22,14 @@ class CodexAdapter:
             "Codex 비대화형 실행이 현재 stdin 계약과 맞지 않아 종료되었습니다.",
         ),
         (
+            re.compile(r"No prompt provided", re.IGNORECASE),
+            "Codex 실행에 작업 프롬프트가 전달되지 않아 종료되었습니다.",
+        ),
+        (
+            re.compile(r"Attempted to create a NULL object|system-configuration", re.IGNORECASE),
+            "Codex 비대화형 실행이 현재 macOS 환경과의 호환성 문제로 종료되었습니다.",
+        ),
+        (
             re.compile(r"npm error code EACCES", re.IGNORECASE),
             "Codex가 전역 npm 업데이트를 시도했지만 권한 오류(EACCES)로 종료되었습니다.",
         ),

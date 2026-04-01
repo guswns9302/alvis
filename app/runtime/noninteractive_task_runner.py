@@ -2,11 +2,8 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
-import pty
 import shlex
 import subprocess
-import threading
 import time
 from pathlib import Path
 
@@ -68,6 +65,29 @@ def _build_invocation(command_text: str, schema_path: Path, schema_output_path: 
     return invocation
 
 
+def _is_codex_exec_command(command: list[str]) -> bool:
+    return bool(command) and Path(command[0]).name == "codex" and "exec" in command[1:]
+
+
+def _run_codex_exec(command: list[str], prompt_text: str, cwd: Path) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        [*command, prompt_text],
+        cwd=str(cwd),
+        capture_output=True,
+        text=True,
+    )
+
+
+def _run_generic_command(command: list[str], prompt_text: str, cwd: Path) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        command,
+        cwd=str(cwd),
+        input=prompt_text,
+        capture_output=True,
+        text=True,
+    )
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--cwd", required=True)
@@ -96,59 +116,38 @@ def main() -> int:
     command = _build_invocation(args.codex_command, schema_path, schema_output_file, last_message_file)
     _write_json(state_file, {"status": "starting", "cwd": str(cwd), "command": command, "output_collected": False})
 
-    master_fd, slave_fd = pty.openpty()
-    process = subprocess.Popen(
-        command,
-        cwd=str(cwd),
-        stdin=slave_fd,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-    )
-    os.close(slave_fd)
-    _write_json(
-        state_file,
-        {
-            "status": "running",
-            "cwd": str(cwd),
-            "command": command,
-            "pid": process.pid,
-            "output_collected": False,
-            "started_at": time.time(),
-        },
-    )
+    started_at = time.time()
+    state_payload = {
+        "status": "running",
+        "cwd": str(cwd),
+        "command": command,
+        "output_collected": False,
+        "started_at": started_at,
+    }
+    if _is_codex_exec_command(command):
+        _write_json(state_file, state_payload)
+        completed = _run_codex_exec(command, prompt_text, cwd)
+        pid = None
+    else:
+        _write_json(state_file, state_payload)
+        completed = _run_generic_command(command, prompt_text, cwd)
+        pid = None
 
-    captured: dict[str, str | None] = {"stdout": None, "stderr": None}
-
-    def _communicate() -> None:
-        os.write(master_fd, prompt_text.encode("utf-8", errors="ignore") + b"\n\x04")
-        stdout, stderr = process.communicate()
-        os.close(master_fd)
-        captured["stdout"] = stdout
-        captured["stderr"] = stderr
-
-    thread = threading.Thread(target=_communicate, daemon=True)
-    thread.start()
-    while thread.is_alive():
-        _write_json(heartbeat_file, {"heartbeat_at": time.time()})
-        thread.join(timeout=0.25)
-
-    stdout_file.write_text(captured["stdout"] or "", encoding="utf-8")
-    stderr_file.write_text(captured["stderr"] or "", encoding="utf-8")
+    stdout_file.write_text(completed.stdout or "", encoding="utf-8")
+    stderr_file.write_text(completed.stderr or "", encoding="utf-8")
     _write_json(heartbeat_file, {"heartbeat_at": time.time()})
-    _write_json(
-        state_file,
-        {
-            "status": "exited",
-            "cwd": str(cwd),
-            "command": command,
-            "pid": process.pid,
-            "exit_code": process.returncode,
-            "output_collected": False,
-            "finished_at": time.time(),
-        },
-    )
-    return process.returncode or 0
+    exited_state = {
+        "status": "exited",
+        "cwd": str(cwd),
+        "command": command,
+        "exit_code": completed.returncode,
+        "output_collected": False,
+        "finished_at": time.time(),
+    }
+    if pid is not None:
+        exited_state["pid"] = pid
+    _write_json(state_file, exited_state)
+    return completed.returncode or 0
 
 
 if __name__ == "__main__":

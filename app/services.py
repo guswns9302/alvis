@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import json
 import os
-import pty
 import sys
 import shlex
 import subprocess
@@ -632,22 +631,21 @@ class AlvisServices:
             if executable == "codex" and "exec" in command[1:]:
                 schema_path.write_text(json.dumps(self._codex_output_schema(), ensure_ascii=False))
                 command = self._build_noninteractive_codex_invocation(schema_output_path, schema_path)
+                result = subprocess.run(
+                    [*command, prompt],
+                    cwd=cwd,
+                    capture_output=True,
+                    text=True,
+                )
             else:
                 command = self._build_noninteractive_codex_invocation(output_path, None)
-            master_fd, slave_fd = pty.openpty()
-            process = subprocess.Popen(
-                command,
-                cwd=cwd,
-                stdin=slave_fd,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True,
-            )
-            os.close(slave_fd)
-            os.write(master_fd, prompt.encode("utf-8", errors="ignore") + b"\n\x04")
-            stdout, stderr = process.communicate()
-            os.close(master_fd)
-            result = subprocess.CompletedProcess(command, process.returncode, stdout, stderr)
+                result = subprocess.run(
+                    command,
+                    cwd=cwd,
+                    input=prompt,
+                    capture_output=True,
+                    text=True,
+                )
             if schema_output_path.exists():
                 schema_output_text = schema_output_path.read_text()
             final_message = output_path.read_text() if output_path.exists() else None
