@@ -18,6 +18,10 @@ class CodexAdapter:
             "Codex 실행 옵션이 현재 설치된 Codex 버전과 맞지 않아 실행에 실패했습니다.",
         ),
         (
+            re.compile(r"stdin is not a terminal", re.IGNORECASE),
+            "Codex 비대화형 실행이 현재 stdin 계약과 맞지 않아 종료되었습니다.",
+        ),
+        (
             re.compile(r"npm error code EACCES", re.IGNORECASE),
             "Codex가 전역 npm 업데이트를 시도했지만 권한 오류(EACCES)로 종료되었습니다.",
         ),

@@ -37,42 +37,40 @@ mkdir -p "$TMP_DIR/src"
 tar -xzf "$TMP_DIR/alvis.tar.gz" -C "$TMP_DIR/src"
 EXTRACTED_DIR="$(find "$TMP_DIR/src" -mindepth 1 -maxdepth 1 -type d | head -n 1)"
 
-rm -rf "$ALVIS_HOME/app"
-mkdir -p "$ALVIS_HOME"
-cp -R "$EXTRACTED_DIR" "$ALVIS_HOME/app"
+ALVIS_EXTRACTED_DIR="$EXTRACTED_DIR" \
+ALVIS_RELEASE_REPO="$ALVIS_RELEASE_REPO" \
+ALVIS_TAG_NAME="$TAG_NAME" \
+ALVIS_TARBALL_URL="$TARBALL_URL" \
+ALVIS_CODEX_COMMAND="$CODEX_PATH" \
+ALVIS_HOME="$ALVIS_HOME" \
+PYTHONPATH="$EXTRACTED_DIR" \
+python3 - <<'PY'
+import os
+from pathlib import Path
 
-if [ ! -d "$ALVIS_HOME/venv" ]; then
-  python3 -m venv "$ALVIS_HOME/venv"
-fi
+from app.config import get_settings
+from app.upgrade import install_from_source
 
-"$ALVIS_HOME/venv/bin/python" -m pip install --upgrade pip
-"$ALVIS_HOME/venv/bin/python" -m pip install "$ALVIS_HOME/app"
-
-mkdir -p "$ALVIS_HOME/bin"
-cat > "$ALVIS_HOME/bin/alvis" <<EOF
-#!/usr/bin/env bash
-set -euo pipefail
-export ALVIS_HOME="$ALVIS_HOME"
-export ALVIS_CODEX_COMMAND="$CODEX_PATH"
-exec "$ALVIS_HOME/venv/bin/alvis" "\$@"
-EOF
-chmod +x "$ALVIS_HOME/bin/alvis"
+settings = get_settings(Path.cwd()).model_copy(
+    update={
+        "app_home": Path(os.environ["ALVIS_HOME"]).expanduser(),
+        "codex_command": os.environ["ALVIS_CODEX_COMMAND"],
+        "release_repo": os.environ["ALVIS_RELEASE_REPO"],
+    }
+)
+install_from_source(
+    settings,
+    Path(os.environ["ALVIS_EXTRACTED_DIR"]),
+    version=os.environ["ALVIS_TAG_NAME"],
+    tarball_url=os.environ["ALVIS_TARBALL_URL"],
+    codex_command=os.environ["ALVIS_CODEX_COMMAND"],
+)
+PY
 
 TARGET_BIN="$HOME/.local/bin"
 mkdir -p "$TARGET_BIN"
 ln -sf "$ALVIS_HOME/bin/alvis" "$TARGET_BIN/alvis"
-
-cat > "$ALVIS_HOME/install.json" <<EOF
-{
-  "version": "$TAG_NAME",
-  "release_repo": "$ALVIS_RELEASE_REPO",
-  "installed_via": "install.sh",
-  "codex_command": "$CODEX_PATH"
-}
-EOF
-
 export PATH="$TARGET_BIN:$PATH"
-"$ALVIS_HOME/bin/alvis" daemon restart
 echo
 "$ALVIS_HOME/bin/alvis" doctor
 

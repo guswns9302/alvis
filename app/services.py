@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import os
+import pty
 import sys
 import shlex
 import subprocess
@@ -542,10 +544,10 @@ class AlvisServices:
     def _build_noninteractive_codex_command(self) -> list[str]:
         parts = shlex.split(self.settings.codex_command)
         if not parts:
-            return ["codex", "exec", "--color", "never", "-"]
+            return ["codex", "exec", "--color", "never"]
         executable = Path(parts[0]).name
         if executable == "codex" and "exec" not in parts[1:2]:
-            return [*parts, "exec", "--color", "never", "-"]
+            return [*parts, "exec", "--color", "never"]
         return parts
 
     def _task_runner_command(self, paths: dict[str, Path], cwd: str) -> list[str]:
@@ -609,8 +611,7 @@ class AlvisServices:
         if output_path is None:
             return command
         invocation = list(command)
-        stdin_marker = invocation[-1] if invocation[-1] == "-" else None
-        if stdin_marker:
+        if invocation and invocation[-1] == "-":
             invocation = invocation[:-1]
         if "--skip-git-repo-check" not in invocation:
             invocation.append("--skip-git-repo-check")
@@ -618,8 +619,6 @@ class AlvisServices:
             invocation.extend(["--output-schema", str(schema_path)])
         if "--output-last-message" not in invocation and "-o" not in invocation:
             invocation.extend(["-o", str(output_path)])
-        if stdin_marker:
-            invocation.append(stdin_marker)
         return invocation
 
     def _run_noninteractive_codex(self, prompt: str, cwd: str) -> tuple[subprocess.CompletedProcess[str], str | None, str | None]:
@@ -635,14 +634,20 @@ class AlvisServices:
                 command = self._build_noninteractive_codex_invocation(schema_output_path, schema_path)
             else:
                 command = self._build_noninteractive_codex_invocation(output_path, None)
-            result = subprocess.run(
+            master_fd, slave_fd = pty.openpty()
+            process = subprocess.Popen(
                 command,
-                input=prompt + "\n",
-                text=True,
-                capture_output=True,
                 cwd=cwd,
-                check=False,
+                stdin=slave_fd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
             )
+            os.close(slave_fd)
+            os.write(master_fd, prompt.encode("utf-8", errors="ignore") + b"\n\x04")
+            stdout, stderr = process.communicate()
+            os.close(master_fd)
+            result = subprocess.CompletedProcess(command, process.returncode, stdout, stderr)
             if schema_output_path.exists():
                 schema_output_text = schema_output_path.read_text()
             final_message = output_path.read_text() if output_path.exists() else None
@@ -1180,9 +1185,7 @@ class AlvisServices:
             specs.append({"kind": "leader_instruction", "message": suggestion})
         for dependency in output.dependency_note:
             specs.append({"kind": "share_context", "message": dependency})
-        if output.status_signal == "blocked":
-            specs.append({"kind": "report_blocker", "message": output.summary})
-        elif output.status_signal == "needs_review":
+        if output.status_signal == "needs_review":
             specs.append({"kind": "request_review", "message": output.summary})
         return [
             {
@@ -1271,7 +1274,7 @@ class AlvisServices:
                     kind="final",
                     summary=str(failure["summary"]),
                     status_signal="blocked",
-                    output_parse_status=None,
+                    output_parse_status="runtime_exec_failed",
                     risk_flags=risk_flags or ["background execution failed"],
                 )
         self.append_event(

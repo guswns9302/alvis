@@ -12,10 +12,22 @@ from app.db.init_db import init_db
 from app.db.models import TaskModel
 from app.db.repository import Repository
 from app.enums import AgentStatus, EventType, TaskStatus
+from app.runtime.noninteractive_task_runner import _build_invocation
 from app.schemas import DispatchResult
 from app.services import AlvisServices
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
+
+
+def test_task_runner_build_invocation_normalizes_bare_codex(tmp_path):
+    schema = tmp_path / "schema.json"
+    output = tmp_path / "output.json"
+
+    invocation = _build_invocation("codex", schema, output, tmp_path / "last.txt")
+
+    assert invocation[:4] == ["codex", "exec", "--color", "never"]
+    assert "--output-schema" in invocation
+    assert "--skip-git-repo-check" in invocation
 
 
 def create_services(tmp_path: Path) -> AlvisServices:
@@ -287,7 +299,7 @@ def test_refresh_agent_runtime_surfaces_background_failure_reason(tmp_path):
 
     assert output is not None
     assert output.status_signal == "blocked"
-    assert output.output_parse_status is None
+    assert output.output_parse_status == "runtime_exec_failed"
     assert "Codex 실행 옵션이 현재 설치된 Codex 버전과 맞지 않아 실행에 실패했습니다." == output.summary
     assert any("다시 시도하세요" in item for item in output.risk_flags)
     assert any(
@@ -295,6 +307,7 @@ def test_refresh_agent_runtime_surfaces_background_failure_reason(tmp_path):
         and event.payload.get("error_summary") == "Codex 실행 옵션이 현재 설치된 Codex 버전과 맞지 않아 실행에 실패했습니다."
         for event in events
     )
+    assert services.list_interactions(run_id=run.run_id) == []
 
 
 def test_codex_runtime_health_extracts_permission_error_summary(tmp_path):
@@ -315,3 +328,18 @@ def test_codex_runtime_health_extracts_permission_error_summary(tmp_path):
     assert health["status"] == "exited"
     assert "권한 오류(EACCES)" in health["error_summary"]
     assert "codex" in health["error_hint"]
+
+
+def test_codex_runtime_health_extracts_stdin_terminal_error(tmp_path):
+    adapter = CodexAdapter(
+        codex_command="codex",
+        runtime_dir=tmp_path,
+    )
+    paths = adapter.session_paths("agent-stdin")
+    paths["state"].write_text('{"status":"exited","exit_code":1}')
+    paths["stderr"].write_text("Error: stdin is not a terminal\n")
+
+    health = adapter.runtime_health("agent-stdin", pane_exists=True)
+
+    assert health["status"] == "exited"
+    assert "stdin 계약" in health["error_summary"]

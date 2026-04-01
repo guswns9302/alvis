@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import subprocess
 import tarfile
@@ -13,11 +14,12 @@ from app.config import Settings, ensure_runtime_dirs
 from app.install_paths import (
     install_app_dir,
     install_bin_dir,
+    inspect_installation_state,
     install_metadata_path,
     install_root,
     install_venv_dir,
+    install_venv_entrypoint_path,
     install_wrapper_path,
-    read_install_metadata,
 )
 from app.launchd import LaunchdManager
 from app.daemon_client import DaemonClient, DaemonUnavailableError
@@ -40,13 +42,26 @@ def _download(url: str, target: Path) -> None:
         target.write_bytes(response.read())
 
 
-def _write_wrapper(settings: Settings) -> Path:
+def _normalize_version(value: str | None) -> str | None:
+    if value is None:
+        return None
+    return value[1:] if value.startswith("v") else value
+
+
+def _write_wrapper(settings: Settings, *, codex_command: str | None = None) -> Path:
     bin_dir = install_bin_dir(settings)
     bin_dir.mkdir(parents=True, exist_ok=True)
     wrapper = install_wrapper_path(settings)
+    exports = [
+        f'export ALVIS_HOME="{settings.app_home}"\n',
+    ]
+    if codex_command or settings.codex_command:
+        exports.append(f'export ALVIS_CODEX_COMMAND="{codex_command or settings.codex_command}"\n')
     wrapper.write_text(
         "#!/usr/bin/env bash\n"
         'set -euo pipefail\n'
+        + "".join(exports)
+        +
         f'exec "{install_venv_dir(settings) / "bin" / "alvis"}" "$@"\n'
     )
     wrapper.chmod(0o755)
@@ -82,8 +97,70 @@ def _verify_daemon_version(settings: Settings, target_version: str) -> dict:
     return {
         "daemon_restarted": health.get("status") == "ok",
         "daemon_version": daemon_version,
-        "daemon_version_matches_target": daemon_version == target_version,
-        "daemon_error": None if daemon_version == target_version else "daemon version mismatch",
+        "daemon_version_matches_target": _normalize_version(daemon_version) == _normalize_version(target_version),
+        "daemon_error": None if _normalize_version(daemon_version) == _normalize_version(target_version) else "daemon version mismatch",
+    }
+
+
+def _daemon_result(settings: Settings, target_version: str, *, restart: bool) -> dict:
+    daemon_result = {
+        "daemon_restarted": False,
+        "daemon_version": None,
+        "daemon_version_matches_target": None,
+        "daemon_error": None,
+    }
+    if not shutil.which("launchctl"):
+        return daemon_result
+    if restart:
+        manager = LaunchdManager(settings)
+        manager.stop()
+        manager.start()
+        daemon_result["daemon_restarted"] = True
+    daemon_result = {**daemon_result, **_verify_daemon_version(settings, target_version)}
+    return daemon_result
+
+
+def _install_from_source(
+    settings: Settings,
+    source_dir: Path,
+    *,
+    version: str,
+    tarball_url: str,
+    codex_command: str | None = None,
+) -> None:
+    app_dir = install_app_dir(settings)
+    if app_dir.exists():
+        shutil.rmtree(app_dir)
+    shutil.copytree(source_dir, app_dir)
+    venv_dir = install_venv_dir(settings)
+    if not venv_dir.exists():
+        subprocess.run(["python3", "-m", "venv", str(venv_dir)], check=True)
+    subprocess.run([str(venv_dir / "bin" / "python"), "-m", "pip", "install", "--upgrade", "pip"], check=True)
+    subprocess.run([str(venv_dir / "bin" / "python"), "-m", "pip", "install", str(app_dir)], check=True)
+    _write_wrapper(settings, codex_command=codex_command)
+    _persist_metadata(settings, version=version, tarball_url=tarball_url)
+
+
+def _build_result(
+    *,
+    status: str,
+    current_version: str | None,
+    target_version: str,
+    install_state: dict,
+    metadata_updated: bool,
+    daemon_result: dict,
+) -> dict:
+    metadata_version = install_state.get("metadata_version")
+    installed_app_version = install_state.get("installed_app_version")
+    return {
+        "status": status,
+        "current_version": current_version,
+        "target_version": target_version,
+        "metadata_version": metadata_version,
+        "installed_app_version": installed_app_version,
+        "install_drift_detected": _normalize_version(metadata_version) != _normalize_version(installed_app_version),
+        "metadata_updated": metadata_updated,
+        **daemon_result,
     }
 
 
@@ -92,30 +169,30 @@ def perform_upgrade(settings: Settings, version: str | None = None) -> dict:
     release = _fetch_release(settings, version)
     tag = release["tag_name"]
     tarball_url = release["tarball_url"]
-    current = read_install_metadata(settings).get("version", __version__)
-    if current == tag:
-        daemon_result = {
-            "daemon_restarted": False,
-            "daemon_version": None,
-            "daemon_version_matches_target": None,
-            "daemon_error": None,
-        }
-        if shutil.which("launchctl"):
-            daemon_result = _verify_daemon_version(settings, tag)
-            if not daemon_result["daemon_version_matches_target"]:
-                manager = LaunchdManager(settings)
-                manager.stop()
-                manager.start()
-                daemon_result = _verify_daemon_version(settings, tag)
-                if not daemon_result["daemon_version_matches_target"]:
-                    return {
-                        "status": "daemon_mismatch",
-                        "current_version": current,
-                        "target_version": tag,
-                        **daemon_result,
-                    }
-                daemon_result["daemon_restarted"] = True
-        return {"status": "noop", "current_version": current, "target_version": tag, **daemon_result}
+    state = inspect_installation_state(settings)
+    current = state.get("installed_app_version") or state.get("metadata_version") or __version__
+    daemon_result = _daemon_result(settings, tag, restart=False)
+
+    installed_matches = _normalize_version(state.get("installed_app_version")) == _normalize_version(tag)
+    wrapper_ready = state.get("wrapper_exists", False)
+    venv_ready = state.get("venv_entrypoint_exists", False)
+    daemon_matches = daemon_result.get("daemon_version_matches_target") is True or daemon_result.get("daemon_version_matches_target") is None and not shutil.which("launchctl")
+    metadata_matches = _normalize_version(state.get("metadata_version")) == _normalize_version(tag)
+
+    if installed_matches and wrapper_ready and venv_ready and daemon_matches:
+        metadata_updated = False
+        if not metadata_matches:
+            _persist_metadata(settings, version=tag, tarball_url=tarball_url)
+            metadata_updated = True
+            state = inspect_installation_state(settings)
+        return _build_result(
+            status="noop",
+            current_version=current,
+            target_version=tag,
+            install_state=state,
+            metadata_updated=metadata_updated,
+            daemon_result=daemon_result,
+        )
 
     with tempfile.TemporaryDirectory() as temp_dir:
         temp_path = Path(temp_dir)
@@ -126,44 +203,55 @@ def perform_upgrade(settings: Settings, version: str | None = None) -> dict:
         with tarfile.open(tarball, "r:gz") as archive:
             archive.extractall(source_dir)
         extracted = next(source_dir.iterdir())
-        app_dir = install_app_dir(settings)
-        if app_dir.exists():
-            shutil.rmtree(app_dir)
-        shutil.copytree(extracted, app_dir)
-        venv_dir = install_venv_dir(settings)
-        if not venv_dir.exists():
-            subprocess.run(["python3", "-m", "venv", str(venv_dir)], check=True)
-        subprocess.run([str(venv_dir / "bin" / "python"), "-m", "pip", "install", "--upgrade", "pip"], check=True)
-        subprocess.run([str(venv_dir / "bin" / "python"), "-m", "pip", "install", str(app_dir)], check=True)
-        _write_wrapper(settings)
-        _persist_metadata(settings, version=tag, tarball_url=tarball_url)
+        _install_from_source(settings, extracted, version=tag, tarball_url=tarball_url)
 
-    daemon_result = {
-        "daemon_restarted": False,
-        "daemon_version": None,
-        "daemon_version_matches_target": None,
-        "daemon_error": None,
-    }
-    if shutil.which("launchctl"):
-        manager = LaunchdManager(settings)
-        manager.stop()
-        manager.start()
-        daemon_result = _verify_daemon_version(settings, tag)
-        if not daemon_result["daemon_version_matches_target"]:
-            return {
-                "status": "daemon_mismatch",
-                "current_version": current,
-                "target_version": tag,
-                **daemon_result,
-            }
-    return {
-        "status": "upgraded",
-        "current_version": current,
-        "target_version": tag,
-        **daemon_result,
-    }
+    daemon_result = _daemon_result(settings, tag, restart=True)
+    state = inspect_installation_state(settings)
+    if daemon_result.get("daemon_version_matches_target") is False:
+        return _build_result(
+            status="daemon_mismatch",
+            current_version=current,
+            target_version=tag,
+            install_state=state,
+            metadata_updated=False,
+            daemon_result=daemon_result,
+        )
+    return _build_result(
+        status="upgraded",
+        current_version=current,
+        target_version=tag,
+        install_state=state,
+        metadata_updated=False,
+        daemon_result=daemon_result,
+    )
 
 
 def install_from_release(settings: Settings, version: str | None = None) -> dict:
     install_root(settings).mkdir(parents=True, exist_ok=True)
     return perform_upgrade(settings, version)
+
+
+def install_from_source(
+    settings: Settings,
+    source_dir: Path,
+    *,
+    version: str,
+    tarball_url: str,
+    codex_command: str | None = None,
+) -> dict:
+    install_root(settings).mkdir(parents=True, exist_ok=True)
+    ensure_runtime_dirs(settings)
+    _install_from_source(settings, source_dir, version=version, tarball_url=tarball_url, codex_command=codex_command)
+    daemon_result = _daemon_result(settings, version, restart=True)
+    state = inspect_installation_state(settings)
+    status = "installed"
+    if daemon_result.get("daemon_version_matches_target") is False:
+        status = "daemon_mismatch"
+    return _build_result(
+        status=status,
+        current_version=state.get("installed_app_version") or state.get("metadata_version") or __version__,
+        target_version=version,
+        install_state=state,
+        metadata_updated=False,
+        daemon_result=daemon_result,
+    )

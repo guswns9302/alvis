@@ -7,8 +7,8 @@ from typing import Any
 
 from rich.console import Console, Group, RenderableType
 from rich.padding import Padding
-from rich.table import Table
 from rich.text import Text
+from rich.table import Table
 
 IMPORTANT_EVENT_TYPES = {
     "run.created",
@@ -93,22 +93,22 @@ def _worker_task_summary(agent: dict[str, Any], status: dict[str, Any]) -> str:
 
 
 def render_worker_strip(status: dict[str, Any]) -> RenderableType:
-    table = Table.grid(expand=True)
-    table.add_column(ratio=2)
-    table.add_column(ratio=1)
-    table.add_column(ratio=4)
     workers = [agent for agent in status.get("agents", []) if agent.get("role") != "leader"]
     if not workers:
-        table.add_row("workers", "-", "-")
+        return Text("workers: -", style="dim")
+    segments: list[Text] = []
     for agent in workers:
         worker_name = str(agent.get("role_alias") or agent.get("role") or "-")
         worker_status = str(agent.get("status") or "-")
-        table.add_row(
-            Text(worker_name, style="bold"),
-            Text(worker_status, style=_status_style(worker_status)),
-            Text(_worker_task_summary(agent, status), style="white"),
-        )
-    return Group(Text("Workers", style="bold green"), table)
+        summary = _worker_task_summary(agent, status)
+        if segments:
+            segments.append(Text("  |  ", style="dim"))
+        segments.append(Text(worker_name, style="bold"))
+        segments.append(Text(" "))
+        segments.append(Text(worker_status, style=_status_style(worker_status)))
+        segments.append(Text(" "))
+        segments.append(Text(summary, style="white"))
+    return Group(Text("Workers", style="bold green"), Group(*segments))
 
 
 def render_session_header(team_id: str, status: dict[str, Any]) -> RenderableType:
@@ -360,14 +360,18 @@ def _sync_transcript(
             console.print(render_message("Alvis", Text(str(final_response)), tone="output"))
 
 
-def _print_prompt_context(console: Console, *, team_id: str, status: dict[str, Any]) -> None:
-    console.print(render_session_header(team_id, status))
-    console.print(render_worker_strip(status))
+def _pending_banner(status: dict[str, Any]) -> str | None:
     pending = status.get("pending_interactions") or []
     if pending:
-        question = next((item.get("message") for item in pending if item.get("message")), "워커가 추가 입력을 기다리고 있습니다.")
-        console.print(render_message("Question", Text(str(question)), tone="warning"))
-    console.print(Text("/status  /logs  /clean  /quit  /shutdown", style="cyan"))
+        return str(next((item.get("message") for item in pending if item.get("message")), "워커가 추가 입력을 기다리고 있습니다."))
+    return None
+
+
+def _print_prompt_context(console: Console, *, status: dict[str, Any]) -> None:
+    console.print(render_worker_strip(status))
+    question = _pending_banner(status)
+    if question:
+        console.print(render_message("Reply", Text(question), tone="warning"))
 
 
 def _start_background_action(action) -> RequestHandle:
@@ -450,6 +454,8 @@ def launch_repl(*, team_id: str, backend: ReplBackend) -> int:
 
     console.print(render_session_header(team_id, status))
     console.print(render_message("System", Text("세션이 준비되었습니다. 요청을 입력하면 결과가 아래로 계속 쌓입니다."), tone="system"))
+    console.print(Text("/status  /logs  /clean  /quit  /shutdown", style="cyan"))
+    console.print(render_worker_strip(status))
     _sync_transcript(
         console,
         status=status,
@@ -472,7 +478,7 @@ def launch_repl(*, team_id: str, backend: ReplBackend) -> int:
             seen_worker_output_keys=seen_worker_output_keys,
             shown_final_keys=shown_final_keys,
         )
-        _print_prompt_context(console, team_id=team_id, status=status)
+        _print_prompt_context(console, status=status)
 
         command = console.input("[bold cyan]> [/] ").strip()
         if not command:

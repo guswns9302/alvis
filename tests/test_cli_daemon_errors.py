@@ -68,6 +68,17 @@ def test_doctor_prints_daemon_runtime_details(monkeypatch, tmp_path):
     monkeypatch.setattr(cli_module, "get_settings", lambda workspace_root=None: _settings(tmp_path))
     monkeypatch.setattr(cli_module, "_daemon_client", lambda: FakeDaemonClient())
     monkeypatch.setattr(
+        cli_module,
+        "inspect_installation_state",
+        lambda settings: {
+            "metadata_version": "v0.2.3",
+            "installed_app_version": "0.2.3",
+            "app_dir_exists": True,
+            "wrapper_exists": True,
+            "venv_entrypoint_exists": True,
+        },
+    )
+    monkeypatch.setattr(
         cli_module.subprocess,
         "run",
         lambda *args, **kwargs: SimpleNamespace(returncode=0),
@@ -81,6 +92,32 @@ def test_doctor_prints_daemon_runtime_details(monkeypatch, tmp_path):
     assert "daemon db_path: /tmp/data/alvis.db" in result.output
     assert "workspace teams: 1" in result.output
     assert "recommended action: run `alvis start`" in result.output
+
+
+def test_doctor_warns_when_install_state_drifts(monkeypatch, tmp_path):
+    monkeypatch.setattr(cli_module, "_workspace_root", lambda: tmp_path)
+    monkeypatch.setattr(cli_module, "get_settings", lambda workspace_root=None: _settings(tmp_path))
+    monkeypatch.setattr(cli_module, "_daemon_client", lambda: FakeDaemonClient())
+    monkeypatch.setattr(
+        cli_module,
+        "inspect_installation_state",
+        lambda settings: {
+            "metadata_version": "v0.2.2",
+            "installed_app_version": "0.2.3",
+            "app_dir_exists": True,
+            "wrapper_exists": True,
+            "venv_entrypoint_exists": True,
+        },
+    )
+    monkeypatch.setattr(cli_module.subprocess, "run", lambda *args, **kwargs: SimpleNamespace(returncode=0))
+
+    result = runner.invoke(cli_module.app, ["doctor"])
+
+    assert result.exit_code == 0
+    assert "install metadata version: v0.2.2" in result.output
+    assert "installed app version: 0.2.3" in result.output
+    assert "install drift detected" in result.output
+    assert "recommended action: run `alvis upgrade` to repair the installed app state" in result.output
 
 
 def test_start_surfaces_conflict_error(monkeypatch, tmp_path):
@@ -136,6 +173,17 @@ def test_doctor_warns_when_daemon_version_mismatches(monkeypatch, tmp_path):
     monkeypatch.setattr(cli_module, "_workspace_root", lambda: tmp_path)
     monkeypatch.setattr(cli_module, "get_settings", lambda workspace_root=None: _settings(tmp_path))
     monkeypatch.setattr(cli_module, "_daemon_client", lambda: MismatchClient())
+    monkeypatch.setattr(
+        cli_module,
+        "inspect_installation_state",
+        lambda settings: {
+            "metadata_version": "v0.2.3",
+            "installed_app_version": "0.2.3",
+            "app_dir_exists": True,
+            "wrapper_exists": True,
+            "venv_entrypoint_exists": True,
+        },
+    )
     monkeypatch.setattr(cli_module.subprocess, "run", lambda *args, **kwargs: SimpleNamespace(returncode=0))
 
     result = runner.invoke(cli_module.app, ["doctor"])

@@ -60,6 +60,7 @@ def test_render_worker_strip_shows_compact_worker_state():
     assert "파이썬과 자바 차이 조사" in output
     assert "reviewer" in output
     assert "╭" not in output
+    assert "|" in output
 
 
 def test_render_event_message_uses_role_alias_and_summary():
@@ -217,8 +218,9 @@ def test_print_prompt_context_shows_pending_question():
         }
     ]
 
-    rich_repl._print_prompt_context(console, team_id="team-demo", status=status)
+    rich_repl._print_prompt_context(console, status=status)
     output = console.export_text()
 
     assert "어느 섹션부터 수정해야 하나요?" in output
+    assert "Reply" in output
     assert "╭" not in output

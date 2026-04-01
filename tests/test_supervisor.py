@@ -460,3 +460,44 @@ def test_supervisor_stops_at_leader_wait_and_keeps_checkpoint(tmp_path):
     assert "waiting for leader input" in state["final_response"].lower()
     assert checkpoint is not None
     assert checkpoint.next_node == "route_interactions"
+
+
+def test_supervisor_runtime_failure_does_not_route_to_leader_or_redo(tmp_path):
+    services = create_services(tmp_path)
+    team_id = f"runtime-fail-{uuid4().hex[:8]}"
+    services.create_team(team_id, "implementer:builder", "reviewer:checker")
+    supervisor = Supervisor(SupervisorDeps(services=services))
+
+    def failed_dispatch(agent_id, contract):
+        services.append_event(
+            team_id=team_id,
+            run_id=contract.context["run_id"],
+            task_id=contract.task_id,
+            agent_id=agent_id,
+            event_type=EventType.AGENT_OUTPUT_FINAL.value,
+            payload={
+                "task_id": contract.task_id,
+                "agent_id": agent_id,
+                "kind": "final",
+                "status_signal": "blocked",
+                "summary": "Codex 비대화형 실행이 현재 stdin 계약과 맞지 않아 종료되었습니다.",
+                "output_parse_status": "runtime_exec_failed",
+                "question_for_leader": [],
+                "requested_context": [],
+                "followup_suggestion": [],
+                "dependency_note": [],
+                "changed_files": [],
+                "test_results": [],
+                "risk_flags": ["Error: stdin is not a terminal"],
+            },
+        )
+        return type("Dispatch", (), {"ok": True, "reason": "background_exec", "prompt": "failed"})()
+
+    services.dispatch_task = failed_dispatch  # type: ignore[method-assign]
+
+    state = supervisor.run(team_id, "dns가 뭐지?")
+    tasks = services.list_run_tasks(state["run_id"])
+
+    assert state["status"] == RunStatus.FAILED.value
+    assert not state["pending_interactions"]
+    assert not any(task.title.startswith("Redo:") for task in tasks)

@@ -23,6 +23,7 @@ from app.cli_formatters import (
 from app.config import get_settings
 from app.daemon_client import DaemonClient, DaemonHttpError, DaemonUnavailableError
 from app.graph.supervisor import Supervisor, SupervisorDeps
+from app.install_paths import inspect_installation_state
 from app.launchd import LaunchdManager
 from app.logging import configure_logging
 from app.rich_repl import ReplBackend, launch_repl
@@ -32,6 +33,12 @@ from app.version import __version__
 app = typer.Typer(help="Alvis CLI")
 daemon_app = typer.Typer(help="Daemon management")
 app.add_typer(daemon_app, name="daemon")
+
+
+def _normalize_version(value: str | None) -> str | None:
+    if value is None:
+        return None
+    return value[1:] if value.startswith("v") else value
 
 
 def _workspace_root() -> Path:
@@ -103,6 +110,7 @@ def version(json_output: bool = typer.Option(False, "--json")):
 def doctor(json_output: bool = typer.Option(False, "--json")):
     settings = get_settings(_workspace_root())
     client = _daemon_client()
+    install_state = inspect_installation_state(settings)
     try:
         daemon = client.health(_workspace_root())
     except DaemonUnavailableError:
@@ -117,12 +125,18 @@ def doctor(json_output: bool = typer.Option(False, "--json")):
         "daemon": daemon,
         "shell_codex_command": settings.codex_command,
         "shell_codex_available": subprocess.run(["which", "codex"], check=False, capture_output=True, text=True).returncode == 0,
+        "install_metadata_version": install_state.get("metadata_version"),
+        "installed_app_version": install_state.get("installed_app_version"),
+        "install_drift_detected": _normalize_version(install_state.get("metadata_version")) != _normalize_version(install_state.get("installed_app_version")),
     }
     daemon_version = payload["daemon"].get("version")
-    daemon_version_matches = daemon_version == __version__ if daemon_version else None
+    daemon_version_matches = _normalize_version(daemon_version) == _normalize_version(__version__) if daemon_version else None
     payload["daemon_version_matches"] = daemon_version_matches
+    payload["install_version_matches"] = _normalize_version(payload["install_metadata_version"]) == _normalize_version(payload["installed_app_version"])
     if not payload["shell_codex_available"]:
         next_action = "install codex and rerun `alvis doctor`"
+    elif payload["install_drift_detected"]:
+        next_action = "run `alvis upgrade` to repair the installed app state"
     elif daemon_version_matches is False:
         next_action = "run `alvis daemon restart` or `alvis upgrade` again"
     elif payload["daemon"].get("status") != "ok":
@@ -144,6 +158,11 @@ def doctor(json_output: bool = typer.Option(False, "--json")):
                 f"daemon: {data['daemon'].get('status', 'unknown')}",
                 f"shell codex_command: {data.get('shell_codex_command') or '-'}",
                 f"shell codex: {'ok' if data['shell_codex_available'] else 'missing'}",
+                f"install metadata version: {data.get('install_metadata_version') or '-'}",
+                f"installed app version: {data.get('installed_app_version') or '-'}",
+                "install drift detected"
+                if data.get("install_drift_detected")
+                else "install drift: none",
                 f"daemon version: {data['daemon'].get('version') or '-'}",
                 f"daemon codex_command: {data['daemon'].get('daemon_codex_command') or '-'}",
                 f"daemon workspace: {data['daemon'].get('daemon_workspace_root') or '-'}",

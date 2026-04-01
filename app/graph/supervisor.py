@@ -706,8 +706,9 @@ class Supervisor:
                 "schema_parse_failed",
                 "schema_contract_failed",
             }
+            runtime_failed = output.output_parse_status == "runtime_exec_failed"
             if output and task.parent_task_id:
-                if parse_failed:
+                if parse_failed or runtime_failed:
                     self.deps.services.update_task(task.task_id, status=TaskStatus.BLOCKED.value, result_summary=summary)
                     blocked.append(
                         {
@@ -718,18 +719,19 @@ class Supervisor:
                             "status": TaskStatus.BLOCKED.value,
                         }
                     )
-                    self.deps.services.append_event(
-                        team_id=state["team_id"],
-                        run_id=state["run_id"],
-                        task_id=task.task_id,
-                        agent_id=task.agent_id,
-                        event_type=event_type_name(EventType.ERROR_RAISED),
-                        payload=event_payload(
-                            "응답 파싱 실패",
-                            parse_status=output.output_parse_status,
-                            task_summary=summary,
-                        ),
-                    )
+                    if parse_failed:
+                        self.deps.services.append_event(
+                            team_id=state["team_id"],
+                            run_id=state["run_id"],
+                            task_id=task.task_id,
+                            agent_id=task.agent_id,
+                            event_type=event_type_name(EventType.ERROR_RAISED),
+                            payload=event_payload(
+                                "응답 파싱 실패",
+                                parse_status=output.output_parse_status,
+                                task_summary=summary,
+                            ),
+                        )
                     continue
                 if status_signal in {"blocked", "needs_review"} and not parse_failed:
                     redo_task = self._create_redo_task(state, task, output, summary)
@@ -918,7 +920,7 @@ class Supervisor:
                 )
                 continue
             if output and status_signal == "blocked":
-                if parse_failed:
+                if parse_failed or runtime_failed:
                     self.deps.services.update_task(task.task_id, status=TaskStatus.BLOCKED.value, result_summary=summary)
                     blocked.append(
                         {
@@ -929,18 +931,19 @@ class Supervisor:
                             "status": TaskStatus.BLOCKED.value,
                         }
                     )
-                    self.deps.services.append_event(
-                        team_id=state["team_id"],
-                        run_id=state["run_id"],
-                        task_id=task.task_id,
-                        agent_id=task.agent_id,
-                        event_type=event_type_name(EventType.ERROR_RAISED),
-                        payload=event_payload(
-                            "응답 파싱 실패",
-                            parse_status=output.output_parse_status,
-                            task_summary=summary,
-                        ),
-                    )
+                    if parse_failed:
+                        self.deps.services.append_event(
+                            team_id=state["team_id"],
+                            run_id=state["run_id"],
+                            task_id=task.task_id,
+                            agent_id=task.agent_id,
+                            event_type=event_type_name(EventType.ERROR_RAISED),
+                            payload=event_payload(
+                                "응답 파싱 실패",
+                                parse_status=output.output_parse_status,
+                                task_summary=summary,
+                            ),
+                        )
                     continue
                 redo_task = self._create_redo_task(state, task, output, summary)
                 self.deps.services.update_task(task.task_id, status=TaskStatus.DONE.value, result_summary=summary)

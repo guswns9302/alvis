@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
+import pty
 import shlex
 import subprocess
 import threading
@@ -48,13 +50,14 @@ def _build_schema() -> dict:
 def _build_invocation(command_text: str, schema_path: Path, schema_output_path: Path, last_message_path: Path) -> list[str]:
     command = shlex.split(command_text)
     if not command:
-        return ["codex", "exec", "--color", "never", "-"]
+        return ["codex", "exec", "--color", "never"]
     executable = Path(command[0]).name
+    if executable == "codex" and "exec" not in command[1:]:
+        command = [*command, "exec", "--color", "never"]
     if executable != "codex" or "exec" not in command[1:]:
         return command
     invocation = list(command)
-    stdin_marker = invocation[-1] if invocation[-1] == "-" else None
-    if stdin_marker:
+    if invocation and invocation[-1] == "-":
         invocation = invocation[:-1]
     if "--skip-git-repo-check" not in invocation:
         invocation.append("--skip-git-repo-check")
@@ -62,8 +65,6 @@ def _build_invocation(command_text: str, schema_path: Path, schema_output_path: 
         invocation.extend(["--output-schema", str(schema_path)])
     if "-o" not in invocation and "--output-last-message" not in invocation:
         invocation.extend(["-o", str(schema_output_path)])
-    if stdin_marker:
-        invocation.append(stdin_marker)
     return invocation
 
 
@@ -95,14 +96,16 @@ def main() -> int:
     command = _build_invocation(args.codex_command, schema_path, schema_output_file, last_message_file)
     _write_json(state_file, {"status": "starting", "cwd": str(cwd), "command": command, "output_collected": False})
 
+    master_fd, slave_fd = pty.openpty()
     process = subprocess.Popen(
         command,
         cwd=str(cwd),
-        stdin=subprocess.PIPE,
+        stdin=slave_fd,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
     )
+    os.close(slave_fd)
     _write_json(
         state_file,
         {
@@ -118,7 +121,9 @@ def main() -> int:
     captured: dict[str, str | None] = {"stdout": None, "stderr": None}
 
     def _communicate() -> None:
-        stdout, stderr = process.communicate(prompt_text + "\n")
+        os.write(master_fd, prompt_text.encode("utf-8", errors="ignore") + b"\n\x04")
+        stdout, stderr = process.communicate()
+        os.close(master_fd)
         captured["stdout"] = stdout
         captured["stderr"] = stderr
 
