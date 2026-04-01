@@ -11,14 +11,13 @@ import uvicorn
 from app.api.server import create_app
 from app.bootstrap import bootstrap_services
 from app.cli_formatters import (
-    format_cleanup,
+    format_clean,
     format_logs,
     format_outputs,
     format_recover,
     format_run_state,
+    format_start,
     format_status,
-    format_team_create,
-    format_team_remove,
     format_team_start,
 )
 from app.config import get_settings
@@ -30,12 +29,8 @@ from app.upgrade import perform_upgrade
 from app.version import __version__
 
 app = typer.Typer(help="Alvis CLI")
-team_app = typer.Typer(help="Team management")
 daemon_app = typer.Typer(help="Daemon management")
-app.add_typer(team_app, name="team")
 app.add_typer(daemon_app, name="daemon")
-
-ROLE_CHOICES = ["implementer", "reviewer", "analyst"]
 
 
 def _workspace_root() -> Path:
@@ -92,46 +87,6 @@ def _emit(data, json_output: bool, formatter) -> None:
     typer.echo(formatter(data))
 
 
-def _prompt_text(label: str, default: str | None = None, *, err: bool = False) -> str:
-    if default is not None:
-        typer.echo(f"{label} [{default}]: ", nl=False, err=err)
-    else:
-        typer.echo(f"{label}: ", nl=False, err=err)
-    value = input()
-    if not value.strip() and default is not None:
-        return default
-    return value.strip()
-
-
-def _prompt_role(worker_label: str, *, err: bool = False) -> str:
-    typer.echo(f"{worker_label} 기본 역할을 선택하세요.", err=err)
-    for index, role in enumerate(ROLE_CHOICES, start=1):
-        typer.echo(f"  {index}. {role}", err=err)
-    selected_index = _prompt_text(f"{worker_label} 역할 번호", default="1", err=err)
-    try:
-        base_role = ROLE_CHOICES[int(selected_index) - 1]
-    except (ValueError, IndexError):
-        raise typer.BadParameter("역할 번호는 1, 2, 3 중 하나여야 합니다.")
-    alias = _prompt_text(f"{worker_label} 역할 별칭", default=base_role, err=err).strip() or base_role
-    return f"{base_role}:{alias}"
-
-
-def _create_team_payload(team_id: str, worker_1_role: str, worker_2_role: str) -> dict:
-    workers = [
-        {
-            "agent_id": f"{team_id}-worker-1",
-            "role": worker_1_role.split(":", 1)[0],
-            "role_alias": worker_1_role.split(":", 1)[1] if ":" in worker_1_role else worker_1_role,
-        },
-        {
-            "agent_id": f"{team_id}-worker-2",
-            "role": worker_2_role.split(":", 1)[0],
-            "role_alias": worker_2_role.split(":", 1)[1] if ":" in worker_2_role else worker_2_role,
-        },
-    ]
-    return {"team_id": team_id, "workers": workers}
-
-
 @app.command()
 def bootstrap():
     configure_logging()
@@ -184,99 +139,19 @@ def doctor(json_output: bool = typer.Option(False, "--json")):
     )
 
 
-@team_app.command("create")
-def create_team(
-    team_id: str | None = typer.Argument(None),
-    worker_1_role: str | None = typer.Option(None, "--worker-1-role"),
-    worker_2_role: str | None = typer.Option(None, "--worker-2-role"),
-    json_output: bool = typer.Option(False, "--json"),
-    no_attach: bool = typer.Option(False, "--no-attach"),
-):
+@app.command()
+def start():
     try:
-        prompt_to_stderr = json_output
-        resolved_team_id = team_id or _prompt_text("팀 이름", err=prompt_to_stderr).strip()
-        if not resolved_team_id:
-            raise typer.BadParameter("팀 이름은 비어 있을 수 없습니다.")
-        resolved_worker_1_role = worker_1_role or _prompt_role("워커 1", err=prompt_to_stderr)
-        resolved_worker_2_role = worker_2_role or _prompt_role("워커 2", err=prompt_to_stderr)
-        payload = _create_team_payload(resolved_team_id, resolved_worker_1_role, resolved_worker_2_role)
         if _direct_mode():
             services = _services()
-            provisioned = services.provision_team(resolved_team_id, resolved_worker_1_role, resolved_worker_2_role)
-            payload["team_id"] = provisioned["team"].team_id
-            payload["start_result"] = provisioned["start_result"]
+            result = services.start_or_attach_default_team()
+            typer.echo(format_start(result))
+            raise typer.Exit(code=services.attach_tmux(result["team_id"]))
         else:
             client = _ensure_daemon_running()
-            try:
-                payload = client.request_json(
-                    "POST",
-                    "/teams/create",
-                    payload={
-                        **client.with_workspace(_workspace_root()),
-                        "team_id": resolved_team_id,
-                        "worker_1_role": resolved_worker_1_role,
-                        "worker_2_role": resolved_worker_2_role,
-                    },
-                    timeout=30,
-                )
-            except DaemonHttpError as exc:
-                detail = exc.detail if isinstance(exc.detail, dict) else {"detail": str(exc.detail)}
-                error_code = detail.get("error_code")
-                message = detail.get("detail") or str(exc)
-                hint = detail.get("hint")
-                if error_code == "tmux_unavailable":
-                    typer.secho(
-                        hint or "tmux를 daemon이 찾지 못했습니다. `alvis doctor`로 경로를 확인하고 `alvis daemon restart`를 실행하세요.",
-                        fg=typer.colors.RED,
-                        err=True,
-                    )
-                    raise typer.Exit(code=1) from exc
-                if exc.status_code == 409 or error_code == "team_exists":
-                    typer.secho(
-                        message,
-                        fg=typer.colors.RED,
-                        err=True,
-                    )
-                    raise typer.Exit(code=1) from exc
-                raise
-        _emit(payload, json_output, format_team_create)
-        start_result = payload.get("start_result", {})
-        if not no_attach and not json_output and start_result.get("all_ready"):
-            raise typer.Exit(code=_services().attach_tmux(resolved_team_id))
-        if not no_attach and not start_result.get("all_ready"):
-            raise typer.Exit(code=1)
-    except ValueError as exc:
-        typer.secho(str(exc), fg=typer.colors.RED, err=True)
-        raise typer.Exit(code=1) from exc
-
-
-@team_app.command("start")
-def start_team(team_id: str, json_output: bool = typer.Option(False, "--json")):
-    try:
-        if _direct_mode():
-            result = _services().start_team(team_id)
-        else:
-            client = _ensure_daemon_running()
-            result = client.request_json("POST", "/teams/start", payload={**client.with_workspace(_workspace_root()), "team_id": team_id}, timeout=30)
-        _emit(result, json_output, format_team_start)
-    except ValueError as exc:
-        typer.secho(str(exc), fg=typer.colors.RED, err=True)
-        raise typer.Exit(code=1) from exc
-    except DaemonHttpError as exc:
-        detail = exc.detail if isinstance(exc.detail, dict) else {"detail": str(exc.detail)}
-        typer.secho(detail.get("detail") or str(exc), fg=typer.colors.RED, err=True)
-        raise typer.Exit(code=1) from exc
-
-
-@team_app.command("remove")
-def remove_team(team_id: str, json_output: bool = typer.Option(False, "--json")):
-    try:
-        if _direct_mode():
-            result = _services().remove_team(team_id)
-        else:
-            client = _ensure_daemon_running()
-            result = client.request_json("POST", "/teams/remove", payload={**client.with_workspace(_workspace_root()), "team_id": team_id})
-        _emit(result, json_output, format_team_remove)
+            result = client.request_json("POST", "/start", payload=client.with_workspace(_workspace_root()), timeout=30)
+            typer.echo(format_start(result))
+            raise typer.Exit(code=_services().attach_tmux(result["team_id"]))
     except ValueError as exc:
         typer.secho(str(exc), fg=typer.colors.RED, err=True)
         raise typer.Exit(code=1) from exc
@@ -365,13 +240,13 @@ def recover(
 
 
 @app.command()
-def cleanup(team_id: str | None = typer.Option(None, "--team-id"), json_output: bool = typer.Option(False, "--json")):
+def clean(json_output: bool = typer.Option(False, "--json")):
     if _direct_mode():
-        result = _services().cleanup_worktrees(team_id=team_id)
+        result = _services().clean_workspace_teams()
     else:
         client = _ensure_daemon_running()
-        result = client.request_json("POST", "/cleanup", payload={**client.with_workspace(_workspace_root()), "team_id": team_id})
-    _emit(result, json_output, format_cleanup)
+        result = client.request_json("POST", "/clean", payload=client.with_workspace(_workspace_root()))
+    _emit(result, json_output, format_clean)
 
 
 @app.command("tmux-attach")

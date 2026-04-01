@@ -6,6 +6,7 @@ import subprocess
 from pathlib import Path
 from uuid import uuid4
 
+from app.bootstrap import _bootstrap_services_cached, bootstrap_services
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 CLI_BIN = REPO_ROOT / ".venv" / "bin" / "alvis"
@@ -34,6 +35,30 @@ def create_cli_env(tmp_path: Path) -> dict[str, str]:
     return env
 
 
+def bootstrap_cli_services(env: dict[str, str]):
+    keys = [
+        "ALVIS_REPO_ROOT",
+        "ALVIS_DATA_DIR",
+        "ALVIS_DB_PATH",
+        "ALVIS_LOG_DIR",
+        "ALVIS_RUNTIME_DIR",
+        "ALVIS_WORKTREE_ROOT",
+        "ALVIS_TMUX_PREFIX",
+        "ALVIS_CODEX_COMMAND",
+    ]
+    previous = {key: os.environ.get(key) for key in keys}
+    os.environ.update({key: env[key] for key in keys})
+    _bootstrap_services_cached.cache_clear()
+    try:
+        return bootstrap_services(env["ALVIS_REPO_ROOT"])
+    finally:
+        for key, value in previous.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
+
+
 def run_cli(env: dict[str, str], *args: str, input_text: str | None = None) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         [str(CLI_BIN), *args],
@@ -42,15 +67,15 @@ def run_cli(env: dict[str, str], *args: str, input_text: str | None = None) -> s
         text=True,
         input=input_text,
         env=env,
-        cwd=str(REPO_ROOT),
+        cwd=env["ALVIS_REPO_ROOT"],
     )
 
 
 def test_cli_run_and_status_pretty_output(tmp_path):
     env = create_cli_env(tmp_path)
-    team_id = f"cli-run-{uuid4().hex[:6]}"
-
-    run_cli(env, "team", "create", team_id, "--worker-1-role", "implementer:builder", "--worker-2-role", "reviewer:checker", "--no-attach")
+    services = bootstrap_cli_services(env)
+    payload = services.start_or_attach_default_team()
+    team_id = payload["team_id"]
     run_result = run_cli(env, "run", team_id, "fix a bug")
     status_result = run_cli(env, "status", team_id)
     status_json = json.loads(run_cli(env, "status", team_id, "--json").stdout)
@@ -65,9 +90,9 @@ def test_cli_run_and_status_pretty_output(tmp_path):
 
 def test_cli_run_routes_to_reviewer_and_finishes_without_manual_review(tmp_path):
     env = create_cli_env(tmp_path)
-    team_id = f"cli-auto-{uuid4().hex[:6]}"
-
-    run_cli(env, "team", "create", team_id, "--worker-1-role", "implementer:builder", "--worker-2-role", "reviewer:checker", "--no-attach")
+    services = bootstrap_cli_services(env)
+    payload = services.start_or_attach_default_team()
+    team_id = payload["team_id"]
     run_state = json.loads(run_cli(env, "run", team_id, "fix a bug", "--json").stdout)
     status_json = json.loads(run_cli(env, "status", team_id, "--json").stdout)
 
@@ -84,16 +109,16 @@ def test_cli_run_routes_to_reviewer_and_finishes_without_manual_review(tmp_path)
 
 def test_cli_status_json_includes_handoff_and_final_candidate_details(tmp_path):
     env = create_cli_env(tmp_path)
-    team_id = f"cli-handoff-details-{uuid4().hex[:6]}"
-
-    run_cli(env, "team", "create", team_id, "--worker-1-role", "implementer:builder", "--worker-2-role", "reviewer:checker", "--no-attach")
+    services = bootstrap_cli_services(env)
+    payload = services.start_or_attach_default_team()
+    team_id = payload["team_id"]
     run_cli(env, "run", team_id, "fix a bug", "--json")
     status_json = json.loads(run_cli(env, "status", team_id, "--json").stdout)
 
     assert status_json["handoffs"]
     handoff = status_json["handoffs"][0]
     assert handoff["parent_task_id"]
-    assert handoff["target_role_alias"] == "checker"
+    assert handoff["target_role_alias"] == "reviewer"
     assert status_json["final_output_candidate"]
     assert status_json["final_output_ready"] is True
     assert "summary" in status_json["final_output_candidate"]
@@ -101,22 +126,10 @@ def test_cli_status_json_includes_handoff_and_final_candidate_details(tmp_path):
 
 def test_cli_recover_reports_missing_panes_after_killed_session(tmp_path):
     env = create_cli_env(tmp_path)
-    team_id = f"cli-recover-{uuid4().hex[:6]}"
-
-    start_payload = json.loads(
-        run_cli(
-            env,
-            "team",
-            "create",
-            team_id,
-            "--worker-1-role",
-            "implementer:builder",
-            "--worker-2-role",
-            "reviewer:checker",
-            "--json",
-            "--no-attach",
-        ).stdout
-    )["start_result"]
+    services = bootstrap_cli_services(env)
+    payload = services.start_or_attach_default_team()
+    team_id = payload["team_id"]
+    start_payload = {"session_name": payload["session_name"]}
     run_cli(env, "run", team_id, "exercise recovery", "--json")
 
     try:
@@ -131,23 +144,10 @@ def test_cli_recover_reports_missing_panes_after_killed_session(tmp_path):
         subprocess.run(["tmux", "kill-session", "-t", start_payload["session_name"]], check=False, capture_output=True, text=True)
 
 
-def test_cli_team_create_interactive_wizard(tmp_path):
+def test_cli_start_reuses_existing_team_attach_flow(tmp_path):
     env = create_cli_env(tmp_path)
-    team_id = f"cli-wizard-{uuid4().hex[:6]}"
-
-    result = run_cli(
-        env,
-        "team",
-        "create",
-        "--json",
-        "--no-attach",
-        input_text=f"{team_id}\n1\nbackend\n2\ntest\n",
-    )
-    payload = json.loads(result.stdout)
-
-    assert payload["team_id"] == team_id
-    assert payload["workers"][0]["role"] == "implementer"
-    assert payload["workers"][0]["role_alias"] == "backend"
-    assert payload["workers"][1]["role"] == "reviewer"
-    assert payload["workers"][1]["role_alias"] == "test"
-    assert payload["start_result"]["session_name"].startswith("alvis-e2e-")
+    services = bootstrap_cli_services(env)
+    first = services.start_or_attach_default_team()
+    second = services.start_or_attach_default_team()
+    assert second["action"] == "attached_existing"
+    assert second["team_id"] == first["team_id"]

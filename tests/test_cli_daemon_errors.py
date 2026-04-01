@@ -36,12 +36,10 @@ class FakeDaemonClient:
         if self.error:
             raise self.error
         return {
-            "team_id": "demo",
-            "workers": [
-                {"agent_id": "demo-worker-1", "role": "reviewer", "role_alias": "reviewer"},
-                {"agent_id": "demo-worker-2", "role": "analyst", "role_alias": "analyst"},
-            ],
-            "start_result": {"all_ready": False},
+            "team_id": "team-demo",
+            "session_name": "alvis-demo",
+            "action": "created",
+            "start_result": {"all_ready": True, "session_name": "alvis-demo"},
         }
 
 
@@ -77,50 +75,26 @@ def test_doctor_prints_daemon_runtime_details(monkeypatch, tmp_path):
     assert "daemon tmux: ok" in result.output
 
 
-def test_team_create_surfaces_conflict_error(monkeypatch, tmp_path):
+def test_start_surfaces_conflict_error(monkeypatch, tmp_path):
     monkeypatch.setattr(cli_module, "_workspace_root", lambda: tmp_path)
     monkeypatch.setattr(cli_module, "_direct_mode", lambda: False)
     monkeypatch.setattr(cli_module, "_ensure_daemon_running", lambda: FakeDaemonClient(error=DaemonHttpError(409, {"error_code": "team_exists", "detail": "team demo already exists"})))
+    monkeypatch.setattr(cli_module, "_services", lambda workspace_root=None: SimpleNamespace(attach_tmux=lambda team_id: 0))
 
-    result = runner.invoke(
-        cli_module.app,
-        [
-            "team",
-            "create",
-            "demo",
-            "--worker-1-role",
-            "reviewer:reviewer",
-            "--worker-2-role",
-            "analyst:analyst",
-            "--json",
-            "--no-attach",
-        ],
-    )
+    result = runner.invoke(cli_module.app, ["start"])
 
     assert result.exit_code == 1
     assert "team demo already exists" in result.output
 
 
-def test_team_create_uses_longer_daemon_timeout(monkeypatch, tmp_path):
+def test_start_uses_longer_daemon_timeout(monkeypatch, tmp_path):
     client = FakeDaemonClient()
     monkeypatch.setattr(cli_module, "_workspace_root", lambda: tmp_path)
     monkeypatch.setattr(cli_module, "_direct_mode", lambda: False)
     monkeypatch.setattr(cli_module, "_ensure_daemon_running", lambda: client)
+    monkeypatch.setattr(cli_module, "_services", lambda workspace_root=None: SimpleNamespace(attach_tmux=lambda team_id: 0))
 
-    result = runner.invoke(
-        cli_module.app,
-        [
-            "team",
-            "create",
-            "demo",
-            "--worker-1-role",
-            "reviewer:reviewer",
-            "--worker-2-role",
-            "analyst:analyst",
-            "--json",
-            "--no-attach",
-        ],
-    )
+    result = runner.invoke(cli_module.app, ["start"])
 
     assert result.exit_code == 0
     assert client.calls

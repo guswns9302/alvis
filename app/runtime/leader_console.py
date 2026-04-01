@@ -136,9 +136,21 @@ def _read_command(buffer: str) -> tuple[str, str | None]:
             buffer = buffer[:-1]
         elif char == "\x03":
             raise KeyboardInterrupt
+        elif char == "\x18":
+            command = "/shutdown"
+            buffer = ""
         elif char.isprintable():
             buffer += char
     return buffer, command
+
+
+def _render_prompt_line(command_buffer: str) -> None:
+    sys.stdout.write("\x1b[s")
+    sys.stdout.write("\x1b[999;1H")
+    sys.stdout.write("\x1b[2K")
+    sys.stdout.write(f"> {command_buffer}")
+    sys.stdout.write("\x1b[u")
+    sys.stdout.flush()
 
 
 def main() -> int:
@@ -167,6 +179,7 @@ def main() -> int:
                         print(f"\n{command_feedback}", end="", flush=True)
                     last_render = current
                 command_buffer, command = _read_command(command_buffer)
+                _render_prompt_line(command_buffer)
             except ValueError as exc:  # pragma: no cover - runtime cleanup path
                 if "not found" in str(exc):
                     return 0
@@ -182,6 +195,10 @@ def main() -> int:
                 time.sleep(1)
                 continue
             if command is not None:
+                if command == "/shutdown":
+                    services = bootstrap_services()
+                    services.shutdown_tmux_team(team_id)
+                    return 0
                 if command == "/quit":
                     return 0
                 if command:
@@ -194,7 +211,7 @@ def main() -> int:
                         _append_error(team_id, traceback.format_exc())
                         command_feedback = f"[ERROR] {exc}"
                         last_render = ""
-            time.sleep(0.3)
+            time.sleep(0.05)
     finally:  # pragma: no cover - terminal restore
         termios.tcsetattr(fd, termios.TCSADRAIN, old_attrs)
 

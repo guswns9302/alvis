@@ -48,6 +48,40 @@ def format_team_remove(result: dict) -> str:
     return "\n".join(lines)
 
 
+def format_start(result: dict) -> str:
+    if result.get("action") == "attached_existing":
+        return "\n".join(
+            [
+                f"기존 팀 세션 진입: {result['team_id']}",
+                f"세션: {result['session_name']}",
+            ]
+        )
+    start_result = {
+        "team_id": result.get("team_id"),
+        "session_name": result.get("session_name"),
+        **(result.get("start_result") or {}),
+    }
+    lines = [
+        f"새 팀 시작: {result['team_id']}",
+        f"세션: {result.get('session_name') or start_result.get('session_name') or '없음'}",
+    ]
+    if start_result:
+        lines.append(format_team_start(start_result))
+    return "\n".join(lines)
+
+
+def format_clean(result: dict) -> str:
+    lines = [
+        f"removed_teams: {result.get('removed_count', 0)}",
+        f"skipped_teams: {result.get('skipped_count', 0)}",
+    ]
+    for team in result.get("removed_teams", []):
+        lines.append(f"  - removed {team['team_id']} session={team.get('session_name') or '-'}")
+    for team in result.get("skipped_teams", []):
+        lines.append(f"  - skipped {team['team_id']} session={team.get('session_name') or '-'}")
+    return "\n".join(lines)
+
+
 def format_run_state(state: dict) -> str:
     run_id = state.get("run_id", "unknown")
     status = state.get("status", "unknown")

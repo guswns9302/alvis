@@ -38,6 +38,10 @@ class RecoverRequest(BaseModel):
     retry: bool = False
 
 
+class WorkspaceRequest(BaseModel):
+    workspace_root: str | None = None
+
+
 def create_app() -> FastAPI:
     app = FastAPI(title="Alvis API", version=__version__)
 
@@ -64,7 +68,7 @@ def create_app() -> FastAPI:
         if "already exists" in message:
             error_code = "team_exists"
             status_code = 409
-            hint = "다른 팀 이름을 사용하거나 `alvis team remove <team_id>` 후 다시 시도하세요."
+            hint = "기존 팀 세션을 정리하려면 `alvis clean`을 실행한 뒤 다시 시도하세요."
         elif "not found" in message:
             error_code = "not_found"
             status_code = 404
@@ -117,6 +121,11 @@ def create_app() -> FastAPI:
             ],
             "start_result": start_result,
         }
+
+    @app.post("/start")
+    def start_workspace(payload: WorkspaceRequest):
+        services = services_for(payload.workspace_root)
+        return services.start_or_attach_default_team()
 
     @app.post("/teams/start")
     def start_team(payload: TeamRequest):
@@ -172,6 +181,11 @@ def create_app() -> FastAPI:
     def cleanup(payload: RecoverRequest):
         services = services_for(payload.workspace_root)
         return services.cleanup_worktrees(team_id=payload.team_id)
+
+    @app.post("/clean")
+    def clean_workspace(payload: WorkspaceRequest):
+        services = services_for(payload.workspace_root)
+        return services.clean_workspace_teams()
 
     @app.get("/runs/{run_id}")
     def get_run(run_id: str, workspace_root: str | None = None):

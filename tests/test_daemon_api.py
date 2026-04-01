@@ -29,6 +29,12 @@ class FakeServices:
             "start_result": {"team_id": team_id, "all_ready": True},
         }
 
+    def start_or_attach_default_team(self) -> dict:
+        return {"action": "created", "team_id": "team-demo", "session_name": "alvis-team-demo", "start_result": {"all_ready": True, "session_name": "alvis-team-demo"}}
+
+    def clean_workspace_teams(self) -> dict:
+        return {"removed_teams": [], "skipped_teams": [], "removed_count": 0, "skipped_count": 0}
+
 
 def test_health_reports_daemon_runtime(monkeypatch):
     monkeypatch.setattr(server_module, "bootstrap_services", lambda workspace_root=None: FakeServices())
@@ -49,7 +55,7 @@ def test_create_team_returns_conflict_for_existing_team(monkeypatch):
         server_module,
         "bootstrap_services",
         lambda workspace_root=None: FakeServices(
-            provision_error=ValueError("team demo already exists; use `alvis team remove demo` first or choose a new name")
+            provision_error=ValueError("team demo already exists; use `alvis clean` first or choose a new name")
         ),
     )
     client = TestClient(create_app())
@@ -94,3 +100,15 @@ def test_create_team_returns_tmux_unavailable(monkeypatch):
     payload = response.json()
     assert payload["error_code"] == "tmux_unavailable"
     assert "tmux" in payload["detail"]
+
+
+def test_start_workspace_returns_created_payload(monkeypatch):
+    monkeypatch.setattr(server_module, "bootstrap_services", lambda workspace_root=None: FakeServices())
+    client = TestClient(create_app())
+
+    response = client.post("/start", json={"workspace_root": "/tmp/demo"})
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["action"] == "created"
+    assert payload["team_id"] == "team-demo"

@@ -1,4 +1,4 @@
-from app.cli_formatters import format_cleanup, format_logs, format_recover, format_status, format_team_create, format_team_start
+from app.cli_formatters import format_clean, format_logs, format_recover, format_start, format_status, format_team_create, format_team_start
 
 
 def test_format_status_renders_core_sections():
@@ -85,14 +85,16 @@ def test_format_logs_prefers_event_summary():
 
 
 def test_format_cleanup_renders_counts():
-    text = format_cleanup(
+    text = format_clean(
         {
-            "deleted_runtime_dirs": [{"agent_id": "demo-worker-1"}],
-            "skipped_active_agents": [{"agent_id": "demo-worker-2"}],
+            "removed_count": 1,
+            "skipped_count": 1,
+            "removed_teams": [{"team_id": "demo-a", "session_name": "alvis-demo-a"}],
+            "skipped_teams": [{"team_id": "demo-b", "session_name": "alvis-demo-b"}],
         }
     )
-    assert "deleted_runtime_dirs: 1" in text
-    assert "skipped_active_agents: 1" in text
+    assert "removed_teams: 1" in text
+    assert "skipped_teams: 1" in text
 
 
 def test_format_team_start_renders_session_issues():
@@ -178,6 +180,19 @@ def test_format_team_create_renders_workers_and_start_result():
     assert "팀 생성됨: demo" in text
     assert "demo-worker-1 role=implementer alias=backend" in text
     assert "팀 시작됨: demo" in text
+
+
+def test_format_start_renders_existing_session_attach():
+    text = format_start(
+        {
+            "action": "attached_existing",
+            "team_id": "demo",
+            "session_name": "alvis-demo",
+        }
+    )
+
+    assert "기존 팀 세션 진입: demo" in text
+    assert "세션: alvis-demo" in text
 
 
 def test_format_recover_renders_session_errors():

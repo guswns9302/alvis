@@ -4,6 +4,7 @@ import json
 import shlex
 import subprocess
 import tempfile
+import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -79,7 +80,7 @@ class AlvisServices:
         with session_scope(self.session_factory) as session:
             repo = Repository(session)
             if repo.get_team(team_id) is not None:
-                raise ValueError(f"team {team_id} already exists; use `alvis team remove {team_id}` first or choose a new name")
+                raise ValueError(f"team {team_id} already exists; use `alvis clean` first or choose a new name")
             team = repo.create_team(team_id, session_name, worker_roles)
             repo.append_event(
                 team_id=team_id,
@@ -569,6 +570,58 @@ class AlvisServices:
                     seen.add(agent.team_id)
             return teams
 
+    def list_workspace_teams(self) -> list[dict]:
+        teams = []
+        for team in self._list_teams():
+            teams.append(
+                {
+                    "team_id": team.team_id,
+                    "session_name": team.session_name or self.tmux.team_session_name(team.team_id),
+                    "session_alive": bool(team.session_name) and self.tmux._session_exists(team.session_name),  # type: ignore[attr-defined]
+                }
+            )
+        teams.sort(key=lambda item: item["team_id"])
+        return teams
+
+    def find_attachable_team(self) -> dict | None:
+        teams = [team for team in self.list_workspace_teams() if team["session_alive"]]
+        if not teams:
+            return None
+        return teams[-1]
+
+    def start_or_attach_default_team(self) -> dict:
+        attachable = self.find_attachable_team()
+        if attachable:
+            return {
+                "action": "attached_existing",
+                "team_id": attachable["team_id"],
+                "session_name": attachable["session_name"],
+            }
+        team_id = f"team-{uuid.uuid4().hex[:8]}"
+        provisioned = self.provision_team(team_id, "implementer:executor", "reviewer:reviewer")
+        return {
+            "action": "created",
+            "team_id": provisioned["team"].team_id,
+            "session_name": provisioned["start_result"]["session_name"],
+            "start_result": provisioned["start_result"],
+        }
+
+    def clean_workspace_teams(self) -> dict:
+        removed = []
+        skipped = []
+        for team in self.list_workspace_teams():
+            result = self.remove_team(team["team_id"])
+            if result.get("removed"):
+                removed.append(result)
+            else:
+                skipped.append(result)
+        return {
+            "removed_teams": removed,
+            "skipped_teams": skipped,
+            "removed_count": len(removed),
+            "skipped_count": len(skipped),
+        }
+
     def dispatch_task(self, agent_id: str, contract: TaskContract) -> DispatchResult:
         agent = self.get_agent(agent_id)
         gate = self.can_dispatch_task(contract.task_id, agent_id, require_live_session=False)
@@ -627,6 +680,8 @@ class AlvisServices:
         stdin_marker = invocation[-1] if invocation[-1] == "-" else None
         if stdin_marker:
             invocation = invocation[:-1]
+        if "--skip-git-repo-check" not in invocation:
+            invocation.append("--skip-git-repo-check")
         if schema_path is not None and "--output-schema" not in invocation:
             invocation.extend(["--output-schema", str(schema_path)])
         if "--output-last-message" not in invocation and "-o" not in invocation:
@@ -1647,6 +1702,9 @@ class AlvisServices:
 
     def attach_tmux(self, team_id: str) -> int:
         return self.tmux.attach(self.tmux.team_session_name(team_id))
+
+    def shutdown_tmux_team(self, team_id: str) -> None:
+        self.tmux.kill_session(self.tmux.team_session_name(team_id))
 
     def remove_team(self, team_id: str) -> dict:
         session_name = self.tmux.team_session_name(team_id)
