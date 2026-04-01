@@ -21,6 +21,7 @@ class FakeDaemonClient:
     def health(self, workspace_root=None):
         return {
             "status": "ok",
+            "version": "0.2.0",
             "daemon_tmux_path": "/opt/homebrew/bin/tmux",
             "daemon_tmux_available": True,
             "daemon_codex_command": "/usr/local/bin/codex",
@@ -78,12 +79,12 @@ def test_doctor_prints_daemon_runtime_details(monkeypatch, tmp_path):
     assert "daemon tmux_path: /opt/homebrew/bin/tmux" in result.output
     assert "daemon codex_command: /usr/local/bin/codex" in result.output
     assert "daemon tmux: ok" in result.output
+    assert "daemon version: 0.2.0" in result.output
 
 
 def test_start_surfaces_conflict_error(monkeypatch, tmp_path):
     monkeypatch.setattr(cli_module, "_workspace_root", lambda: tmp_path)
-    monkeypatch.setattr(cli_module, "_direct_mode", lambda: False)
-    monkeypatch.setattr(cli_module, "_ensure_daemon_running", lambda: FakeDaemonClient(error=DaemonHttpError(409, {"error_code": "team_exists", "detail": "team demo already exists"})))
+    monkeypatch.setattr(cli_module, "_services", lambda workspace_root=None: SimpleNamespace(start_or_attach_default_team=lambda: (_ for _ in ()).throw(ValueError("team demo already exists"))))
 
     result = runner.invoke(cli_module.app, ["start"])
 
@@ -91,18 +92,23 @@ def test_start_surfaces_conflict_error(monkeypatch, tmp_path):
     assert "team demo already exists" in result.output
 
 
-def test_start_uses_longer_daemon_timeout(monkeypatch, tmp_path):
-    client = FakeDaemonClient()
+def test_start_uses_local_services_without_daemon(monkeypatch, tmp_path):
+    calls = []
     monkeypatch.setattr(cli_module, "_workspace_root", lambda: tmp_path)
     monkeypatch.setattr(cli_module, "_direct_mode", lambda: False)
-    monkeypatch.setattr(cli_module, "_ensure_daemon_running", lambda: client)
-    monkeypatch.setattr(cli_module, "_services", lambda workspace_root=None: SimpleNamespace())
+    monkeypatch.setattr(cli_module, "_ensure_daemon_running", lambda: (_ for _ in ()).throw(AssertionError("daemon should not be used")))
+    monkeypatch.setattr(
+        cli_module,
+        "_services",
+        lambda workspace_root=None: SimpleNamespace(
+            start_or_attach_default_team=lambda: calls.append("start") or {"team_id": "team-demo", "action": "created"}
+        ),
+    )
 
     result = runner.invoke(cli_module.app, ["start"])
 
     assert result.exit_code == 0
-    assert client.calls
-    assert client.calls[0]["kwargs"]["timeout"] == 30
+    assert calls == ["start"]
 
 
 def test_clean_uses_longer_daemon_timeout(monkeypatch, tmp_path):
@@ -117,3 +123,21 @@ def test_clean_uses_longer_daemon_timeout(monkeypatch, tmp_path):
     assert client.calls
     assert client.calls[0]["args"][1] == "/clean"
     assert client.calls[0]["kwargs"]["timeout"] == 30
+
+
+def test_doctor_warns_when_daemon_version_mismatches(monkeypatch, tmp_path):
+    class MismatchClient(FakeDaemonClient):
+        def health(self, workspace_root=None):
+            payload = super().health(workspace_root)
+            payload["version"] = "0.1.0"
+            return payload
+
+    monkeypatch.setattr(cli_module, "_workspace_root", lambda: tmp_path)
+    monkeypatch.setattr(cli_module, "get_settings", lambda workspace_root=None: _settings(tmp_path))
+    monkeypatch.setattr(cli_module, "_daemon_client", lambda: MismatchClient())
+    monkeypatch.setattr(cli_module.subprocess, "run", lambda *args, **kwargs: SimpleNamespace(returncode=0))
+
+    result = runner.invoke(cli_module.app, ["doctor"])
+
+    assert result.exit_code == 0
+    assert "daemon version mismatch" in result.output

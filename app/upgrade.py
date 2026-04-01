@@ -20,6 +20,7 @@ from app.install_paths import (
     read_install_metadata,
 )
 from app.launchd import LaunchdManager
+from app.daemon_client import DaemonClient, DaemonUnavailableError
 from app.version import __version__
 
 
@@ -66,6 +67,26 @@ def _persist_metadata(settings: Settings, *, version: str, tarball_url: str) -> 
     )
 
 
+def _verify_daemon_version(settings: Settings, target_version: str) -> dict:
+    client = DaemonClient(settings)
+    try:
+        health = client.health(settings.repo_root)
+    except DaemonUnavailableError as exc:
+        return {
+            "daemon_restarted": False,
+            "daemon_version": None,
+            "daemon_version_matches_target": False,
+            "daemon_error": str(exc),
+        }
+    daemon_version = health.get("version")
+    return {
+        "daemon_restarted": health.get("status") == "ok",
+        "daemon_version": daemon_version,
+        "daemon_version_matches_target": daemon_version == target_version,
+        "daemon_error": None if daemon_version == target_version else "daemon version mismatch",
+    }
+
+
 def perform_upgrade(settings: Settings, version: str | None = None) -> dict:
     ensure_runtime_dirs(settings)
     release = _fetch_release(settings, version)
@@ -96,9 +117,30 @@ def perform_upgrade(settings: Settings, version: str | None = None) -> dict:
         _write_wrapper(settings)
         _persist_metadata(settings, version=tag, tarball_url=tarball_url)
 
+    daemon_result = {
+        "daemon_restarted": False,
+        "daemon_version": None,
+        "daemon_version_matches_target": None,
+        "daemon_error": None,
+    }
     if shutil.which("launchctl"):
-        LaunchdManager(settings).restart()
-    return {"status": "upgraded", "current_version": current, "target_version": tag}
+        manager = LaunchdManager(settings)
+        manager.stop()
+        manager.start()
+        daemon_result = _verify_daemon_version(settings, tag)
+        if not daemon_result["daemon_version_matches_target"]:
+            return {
+                "status": "daemon_mismatch",
+                "current_version": current,
+                "target_version": tag,
+                **daemon_result,
+            }
+    return {
+        "status": "upgraded",
+        "current_version": current,
+        "target_version": tag,
+        **daemon_result,
+    }
 
 
 def install_from_release(settings: Settings, version: str | None = None) -> dict:

@@ -89,7 +89,9 @@ cat > "$ALVIS_HOME/install.json" <<EOF
 EOF
 
 export PATH="$TARGET_BIN:$PATH"
-"$ALVIS_HOME/bin/alvis" daemon start >/dev/null 2>&1 || true
+"$ALVIS_HOME/bin/alvis" daemon restart
+echo
+"$ALVIS_HOME/bin/alvis" doctor
 
 echo "Alvis installed."
 echo "Version: $TAG_NAME"

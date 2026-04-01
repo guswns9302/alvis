@@ -119,6 +119,9 @@ def doctor(json_output: bool = typer.Option(False, "--json")):
         "shell_tmux_available": subprocess.run(["which", "tmux"], check=False, capture_output=True, text=True).returncode == 0,
         "shell_codex_available": subprocess.run(["which", "codex"], check=False, capture_output=True, text=True).returncode == 0,
     }
+    daemon_version = payload["daemon"].get("version")
+    daemon_version_matches = daemon_version == __version__ if daemon_version else None
+    payload["daemon_version_matches"] = daemon_version_matches
     _emit(
         payload,
         json_output,
@@ -133,9 +136,17 @@ def doctor(json_output: bool = typer.Option(False, "--json")):
                 f"shell codex_command: {data.get('shell_codex_command') or '-'}",
                 f"shell tmux: {'ok' if data['shell_tmux_available'] else 'missing'}",
                 f"shell codex: {'ok' if data['shell_codex_available'] else 'missing'}",
+                f"daemon version: {data['daemon'].get('version') or '-'}",
                 f"daemon tmux_path: {data['daemon'].get('daemon_tmux_path') or '-'}",
                 f"daemon codex_command: {data['daemon'].get('daemon_codex_command') or '-'}",
                 f"daemon tmux: {'ok' if data['daemon'].get('daemon_tmux_available') else 'missing'}",
+                (
+                    "daemon version mismatch: run `alvis daemon restart` or `alvis upgrade` again"
+                    if data.get("daemon_version_matches") is False
+                    else "daemon version matches cli"
+                    if data.get("daemon_version_matches") is True
+                    else "daemon version match: unknown"
+                ),
             ]
         ),
     )
@@ -144,20 +155,12 @@ def doctor(json_output: bool = typer.Option(False, "--json")):
 @app.command()
 def start():
     try:
-        if _direct_mode():
-            services = _services()
-            result = services.start_or_attach_default_team()
-            typer.echo(format_start(result))
-            if os.getenv("PYTEST_CURRENT_TEST") or not sys.stdin.isatty():
-                raise typer.Exit(code=0)
-            raise typer.Exit(code=launch_repl(team_id=result["team_id"], backend=ReplBackend(services=services)))
-        else:
-            client = _ensure_daemon_running()
-            result = client.request_json("POST", "/start", payload=client.with_workspace(_workspace_root()), timeout=30)
-            typer.echo(format_start(result))
-            if os.getenv("PYTEST_CURRENT_TEST") or not sys.stdin.isatty():
-                raise typer.Exit(code=0)
-            raise typer.Exit(code=launch_repl(team_id=result["team_id"], backend=ReplBackend(services=_services())))
+        services = _services()
+        result = services.start_or_attach_default_team()
+        typer.echo(format_start(result))
+        if os.getenv("PYTEST_CURRENT_TEST") or not sys.stdin.isatty():
+            raise typer.Exit(code=0)
+        raise typer.Exit(code=launch_repl(team_id=result["team_id"], backend=ReplBackend(services=services)))
     except ValueError as exc:
         typer.secho(str(exc), fg=typer.colors.RED, err=True)
         raise typer.Exit(code=1) from exc
