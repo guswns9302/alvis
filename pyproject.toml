@@ -1,6 +1,6 @@
 [project]
 name = "alvis"
-version = "0.1.7"
+version = "0.1.8"
 description = "LangGraph-centered tmux orchestrator for Codex CLI teams"
 readme = "README.md"
 requires-python = ">=3.12"

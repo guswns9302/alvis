@@ -245,7 +245,7 @@ def clean(json_output: bool = typer.Option(False, "--json")):
         result = _services().clean_workspace_teams()
     else:
         client = _ensure_daemon_running()
-        result = client.request_json("POST", "/clean", payload=client.with_workspace(_workspace_root()))
+        result = client.request_json("POST", "/clean", payload=client.with_workspace(_workspace_root()), timeout=30)
     _emit(result, json_output, format_clean)
 
 

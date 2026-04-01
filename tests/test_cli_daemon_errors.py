@@ -35,6 +35,13 @@ class FakeDaemonClient:
         self.calls.append({"args": args, "kwargs": kwargs})
         if self.error:
             raise self.error
+        if args[1] == "/clean":
+            return {
+                "removed_teams": [],
+                "skipped_teams": [],
+                "removed_count": 0,
+                "skipped_count": 0,
+            }
         return {
             "team_id": "team-demo",
             "session_name": "alvis-demo",
@@ -98,4 +105,18 @@ def test_start_uses_longer_daemon_timeout(monkeypatch, tmp_path):
 
     assert result.exit_code == 0
     assert client.calls
+    assert client.calls[0]["kwargs"]["timeout"] == 30
+
+
+def test_clean_uses_longer_daemon_timeout(monkeypatch, tmp_path):
+    client = FakeDaemonClient()
+    monkeypatch.setattr(cli_module, "_workspace_root", lambda: tmp_path)
+    monkeypatch.setattr(cli_module, "_direct_mode", lambda: False)
+    monkeypatch.setattr(cli_module, "_ensure_daemon_running", lambda: client)
+
+    result = runner.invoke(cli_module.app, ["clean"])
+
+    assert result.exit_code == 0
+    assert client.calls
+    assert client.calls[0]["args"][1] == "/clean"
     assert client.calls[0]["kwargs"]["timeout"] == 30
