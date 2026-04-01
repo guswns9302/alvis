@@ -1,6 +1,7 @@
 from uuid import uuid4
 
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -47,6 +48,46 @@ def test_supervisor_creates_run_and_tasks(tmp_path):
     assert len(services.list_run_tasks(state["run_id"])) >= 2
 
 
+def test_supervisor_run_uses_compiled_graph_when_available(tmp_path):
+    services = create_services(tmp_path)
+    supervisor = Supervisor(SupervisorDeps(services=services))
+    invoked = {}
+
+    class FakeGraph:
+        def invoke(self, state):
+            invoked["team_id"] = state["team_id"]
+            return {**state, "status": "done"}
+
+    supervisor.build_graph = lambda entry_point="ingest_request": FakeGraph()  # type: ignore[method-assign]
+
+    state = supervisor.run("team-graph", "fix a bug")
+
+    assert invoked["team_id"] == "team-graph"
+    assert state["status"] == "done"
+
+
+def test_supervisor_resume_uses_checkpoint_entrypoint(tmp_path):
+    services = create_services(tmp_path)
+    supervisor = Supervisor(SupervisorDeps(services=services))
+    captured = {}
+
+    class FakeGraph:
+        def invoke(self, state):
+            captured["state"] = state
+            return state
+
+    supervisor.build_graph = lambda entry_point="ingest_request": captured.update({"entry_point": entry_point}) or FakeGraph()  # type: ignore[method-assign]
+    services.load_checkpoint = lambda run_id: SimpleNamespace(  # type: ignore[method-assign]
+        state={"team_id": "team-demo", "run_id": run_id, "status": RunStatus.RUNNING.value},
+        next_node="wait_for_updates",
+    )
+
+    state = supervisor.resume("run-demo")
+
+    assert captured["entry_point"] == "wait_for_updates"
+    assert state["run_id"] == "run-demo"
+
+
 def test_supervisor_creates_reviewer_handoff_and_final_output(tmp_path):
     services = create_services(tmp_path)
     team_id = f"handoff-team-{uuid4().hex[:8]}"
@@ -65,6 +106,38 @@ def test_supervisor_creates_reviewer_handoff_and_final_output(tmp_path):
     assert state["final_output_ready"] is True
     assert any(event.event_type == EventType.TASK_HANDOFF_CREATED.value for event in events)
     assert any(event.event_type == EventType.LEADER_OUTPUT_READY.value for event in events)
+
+
+def test_supervisor_plans_reviewer_child_task_from_start(tmp_path):
+    services = create_services(tmp_path)
+    team_id = f"planned-review-{uuid4().hex[:8]}"
+    services.create_team(team_id, "implementer:builder", "reviewer:checker")
+    supervisor = Supervisor(SupervisorDeps(services=services))
+
+    run = services.create_run(team_id, "fix a bug")
+    state = {
+        "team_id": team_id,
+        "run_id": run.run_id,
+        "user_request": "fix a bug",
+        "tasks": [],
+        "assignments": [],
+        "active_tasks": [],
+        "completed_tasks": [],
+        "blocked_tasks": [],
+        "review_requests": [],
+        "pending_interactions": [],
+        "handoffs": [],
+        "final_output_candidate": None,
+        "final_output_ready": False,
+        "status": RunStatus.CREATED.value,
+    }
+
+    planned = supervisor.plan_tasks(state)
+    tasks = services.list_run_tasks(run.run_id)
+    reviewer_task = next(task for task in tasks if task.title == "Validate and summarize")
+    parent = next(task for task in tasks if task.parent_task_id is None)
+
+    assert reviewer_task.parent_task_id == parent.task_id
 
 
 def test_supervisor_creates_redo_when_worker_output_is_invalid(tmp_path):
@@ -219,7 +292,7 @@ def test_supervisor_persists_checkpoint_for_active_run(tmp_path):
     assert checkpoint.next_node == "wait_for_updates"
 
 
-def test_recover_blocks_missing_pane_and_orphaned_task(tmp_path):
+def test_recover_blocks_missing_runtime_and_orphaned_task(tmp_path):
     services = create_services(tmp_path)
     team_id = f"recover-team-{uuid4().hex[:8]}"
     services.create_team(team_id, "implementer:builder", "reviewer:checker")
@@ -233,10 +306,10 @@ def test_recover_blocks_missing_pane_and_orphaned_task(tmp_path):
         repo.update_agent(agent, tmux_pane="%999", current_task_id=target_task, status="running")
         repo.update_task(task, status=TaskStatus.RUNNING.value)
 
-    services.tmux.pane_exists = lambda pane_id: False  # type: ignore[method-assign]
+    services.codex.runtime_health = lambda agent_id, pane_exists: {"status": "not_ready", "ready": False}  # type: ignore[method-assign]
     report = services.recover(team_id=team_id)
 
-    assert f"{team_id}-worker-1" in report["missing_panes"]
+    assert f"{team_id}-worker-1" in report["missing_runtime_state"]
     assert target_task in report["orphaned_tasks"]
     assert any(action["type"] == "task_blocked_orphaned" for action in report["actions_taken"])
     assert services.get_task(target_task).status == TaskStatus.BLOCKED.value
@@ -345,3 +418,45 @@ def test_worker_question_routes_to_leader_queue(tmp_path):
     )
     assert routed["pending_interactions"]
     assert any(item.status == "pending" for item in services.list_interactions(run_id=run.run_id))
+
+
+def test_supervisor_stops_at_leader_wait_and_keeps_checkpoint(tmp_path):
+    services = create_services(tmp_path)
+    team_id = f"leader-wait-{uuid4().hex[:8]}"
+    services.create_team(team_id, "implementer:builder", "reviewer:checker")
+    supervisor = Supervisor(SupervisorDeps(services=services))
+
+    def needs_input_dispatch(agent_id, contract):
+        services.append_event(
+            team_id=team_id,
+            run_id=contract.context["run_id"],
+            task_id=contract.task_id,
+            agent_id=agent_id,
+            event_type=EventType.AGENT_OUTPUT_FINAL.value,
+            payload={
+                "task_id": contract.task_id,
+                "agent_id": agent_id,
+                "kind": "final",
+                "status_signal": "need_input",
+                "summary": "Need clarification",
+                "question_for_leader": ["Which section should be updated first?"],
+                "requested_context": [],
+                "followup_suggestion": [],
+                "dependency_note": [],
+                "changed_files": [],
+                "test_results": [],
+                "risk_flags": [],
+            },
+        )
+        return type("Dispatch", (), {"ok": True, "reason": "background_exec", "prompt": "need-input"})()
+
+    services.dispatch_task = needs_input_dispatch  # type: ignore[method-assign]
+
+    state = supervisor.run(team_id, "need clarification")
+    checkpoint = services.load_checkpoint(state["run_id"])
+
+    assert state["status"] == RunStatus.RUNNING.value
+    assert state["pending_interactions"]
+    assert "waiting for leader input" in state["final_response"].lower()
+    assert checkpoint is not None
+    assert checkpoint.next_node == "route_interactions"

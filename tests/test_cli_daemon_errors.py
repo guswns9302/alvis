@@ -22,11 +22,12 @@ class FakeDaemonClient:
         return {
             "status": "ok",
             "version": "0.2.0",
-            "daemon_tmux_path": "/opt/homebrew/bin/tmux",
-            "daemon_tmux_available": True,
             "daemon_codex_command": "/usr/local/bin/codex",
             "daemon_workspace_root": str(workspace_root or "/tmp/workspace"),
             "daemon_data_dir": "/tmp/data",
+            "daemon_db_path": "/tmp/data/alvis.db",
+            "daemon_runtime_dir": "/tmp/data/runtime",
+            "daemon_team_count": 1,
         }
 
     def with_workspace(self, workspace_root=None):
@@ -59,7 +60,6 @@ def _settings(tmp_path: Path) -> Settings:
         runtime_dir=data_dir / "runtime",
         worktree_root=data_dir / "worktrees",
         codex_command="/usr/local/bin/codex",
-        tmux_path="/opt/homebrew/bin/tmux",
     )
 
 
@@ -76,10 +76,10 @@ def test_doctor_prints_daemon_runtime_details(monkeypatch, tmp_path):
     result = runner.invoke(cli_module.app, ["doctor"])
 
     assert result.exit_code == 0
-    assert "daemon tmux_path: /opt/homebrew/bin/tmux" in result.output
     assert "daemon codex_command: /usr/local/bin/codex" in result.output
-    assert "daemon tmux: ok" in result.output
     assert "daemon version: 0.2.0" in result.output
+    assert "daemon db_path: /tmp/data/alvis.db" in result.output
+    assert "workspace teams: 1" in result.output
 
 
 def test_start_surfaces_conflict_error(monkeypatch, tmp_path):

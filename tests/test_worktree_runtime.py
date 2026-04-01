@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
+import time
 from uuid import uuid4
 
 from app.agents.codex_adapter import CodexAdapter
@@ -109,7 +111,6 @@ def test_recover_retry_re_dispatches_blocked_task_on_same_agent(tmp_path):
             cwd=str(services.settings.repo_root),
             status=AgentStatus.BLOCKED.value,
             current_task_id="task-retry-1",
-            tmux_pane="%1",
         )
         task = TaskModel(
             task_id="task-retry-1",
@@ -125,7 +126,6 @@ def test_recover_retry_re_dispatches_blocked_task_on_same_agent(tmp_path):
         session.add(task)
         session.flush()
 
-    services.tmux.pane_exists = lambda pane_id: True  # type: ignore[method-assign]
     services.codex.runtime_health = lambda agent_id, pane_exists: {"status": "ready", "ready": True}  # type: ignore[method-assign]
     services.dispatch_task = lambda agent_id, contract: DispatchResult(ok=True, prompt="RETRY_PROMPT")  # type: ignore[method-assign]
     report = services.recover(team_id=team_id, retry=True)
@@ -151,7 +151,6 @@ def test_retry_candidate_status_matches_recover_threshold_rules(tmp_path):
             cwd=str(services.settings.repo_root),
             status=AgentStatus.BLOCKED.value,
             current_task_id="task-retry-status-1",
-            tmux_pane="%1",
         )
         task = TaskModel(
             task_id="task-retry-status-1",
@@ -176,7 +175,6 @@ def test_retry_candidate_status_matches_recover_threshold_rules(tmp_path):
                 payload={"summary": "Retry requested", "retry_count": count + 1},
             )
 
-    services.tmux.pane_exists = lambda pane_id: True  # type: ignore[method-assign]
     services.codex.runtime_health = lambda agent_id, pane_exists: {"status": "ready", "ready": True}  # type: ignore[method-assign]
     status = services.status(team_id)
     report = services.recover(team_id=team_id, retry=True)
@@ -196,6 +194,12 @@ def test_background_runner_success_does_not_emit_error_event(tmp_path):
     agent = services.get_agent(agent_id)
 
     dispatch = services.dispatch_task(agent_id, services._default_task_contract(task, agent))  # type: ignore[attr-defined]
+    deadline = time.time() + 5
+    while time.time() < deadline:
+        outputs = services.collect_outputs(team_id)
+        if outputs:
+            break
+        time.sleep(0.1)
     events = services.list_events(team_id=team_id, run_id=run.run_id)
 
     assert dispatch.ok is True
@@ -226,12 +230,39 @@ def test_can_dispatch_blocks_when_session_not_ready(tmp_path):
     assert services.get_task(task.task_id).status == TaskStatus.BLOCKED.value
 
 
+def test_recover_collects_uncollected_exited_output(tmp_path):
+    services = create_fake_runtime_services(tmp_path)
+    team_id = f"recover-output-{uuid4().hex[:6]}"
+    agent_id = f"{team_id}-worker-1"
+    services.create_team(team_id, "implementer:builder", "reviewer:checker")
+    run = services.create_run(team_id, "recover output")
+    task = services.create_task(team_id, run.run_id, "Implement", "recover output", target_role_alias="builder", owned_paths=["README.md"])
+    services.assign_task(task.task_id, agent_id)
+    agent = services.get_agent(agent_id)
+
+    dispatch = services.dispatch_task(agent_id, services.build_task_contract(task, agent))
+    assert dispatch.ok is True
+
+    state_path = services.codex.session_paths(agent_id)["state"]
+    deadline = time.time() + 5
+    while time.time() < deadline:
+        state = services.codex.read_session_state(agent_id)
+        if state.get("status") == "exited":
+            state["output_collected"] = False
+            state_path.write_text(json.dumps(state), encoding="utf-8")
+            break
+        time.sleep(0.1)
+
+    report = services.recover(team_id=team_id)
+    events = services.list_events(team_id=team_id, run_id=run.run_id)
+
+    assert agent_id in report["collected_outputs"]
+    assert any(event.event_type == EventType.AGENT_OUTPUT_FINAL.value and event.task_id == task.task_id for event in events)
+
+
 def test_codex_runtime_health_extracts_permission_error_summary(tmp_path):
     adapter = CodexAdapter(
-        tmux=None,  # type: ignore[arg-type]
         codex_command="codex",
-        log_dir=tmp_path,
-        repo_root=tmp_path,
         runtime_dir=tmp_path,
     )
     paths = adapter.session_paths("agent-1")

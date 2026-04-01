@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import sys
 import shlex
 import subprocess
 import tempfile
@@ -41,25 +42,8 @@ class AlvisServices:
         self.session_factory = session_factory
         self.tmux = TmuxManager(settings.tmux_session_prefix, settings.tmux_path)
         self.codex = CodexAdapter(
-            self.tmux,
             settings.codex_command,
-            settings.log_dir,
-            settings.repo_root,
             settings.runtime_dir,
-            env_overrides={
-                "ALVIS_HOME": str(settings.app_home),
-                "ALVIS_WORKSPACE_ROOT": str(settings.repo_root),
-                "ALVIS_REPO_ROOT": str(settings.repo_root),
-                "ALVIS_DATA_DIR": str(settings.data_dir),
-                "ALVIS_DB_PATH": str(settings.db_path),
-                "ALVIS_LOG_DIR": str(settings.log_dir),
-                "ALVIS_RUNTIME_DIR": str(settings.runtime_dir),
-                "ALVIS_WORKTREE_ROOT": str(settings.worktree_root),
-                "ALVIS_TMUX_PREFIX": settings.tmux_session_prefix,
-                "ALVIS_CODEX_COMMAND": settings.codex_command,
-                "ALVIS_DAEMON_HOST": settings.daemon_host,
-                "ALVIS_DAEMON_PORT": str(settings.daemon_port),
-            },
         )
         self.worktrees = WorktreeManager(settings.repo_root, settings.worktree_root)
         self.output_collector = OutputCollector()
@@ -96,120 +80,22 @@ class AlvisServices:
             return team
 
     def daemon_health(self) -> dict:
-        tmux_path = self.tmux.executable()
+        team_count = len(self.list_workspace_teams())
         return {
             "status": "ok",
-            "tmux_path": tmux_path,
-            "tmux_available": tmux_path is not None,
             "codex_command": self.settings.codex_command,
             "workspace_root": str(self.settings.repo_root),
             "data_dir": str(self.settings.data_dir),
+            "db_path": str(self.settings.db_path),
+            "runtime_dir": str(self.settings.runtime_dir),
+            "team_count": team_count,
         }
 
-    def provision_team(self, team_id: str, worker_1_role: str, worker_2_role: str):
-        tmux_path = self.tmux.executable()
-        if not tmux_path:
-            raise TmuxUnavailableError("tmux is not installed or not available on PATH")
-        created = False
-        try:
-            team = self.create_team(team_id, worker_1_role, worker_2_role)
-            created = True
-            start_result = self.start_team(team_id)
-            return {"team": team, "start_result": start_result}
-        except Exception:
-            if created:
-                try:
-                    self.remove_team(team_id)
-                except Exception as cleanup_exc:  # pragma: no cover - defensive runtime logging
-                    self.log.warning("team.provision_cleanup_failed", team_id=team_id, error=str(cleanup_exc))
-            raise
-
-    def start_team(self, team_id: str):
-        with session_scope(self.session_factory) as session:
-            repo = Repository(session)
-            team = repo.get_team(team_id)
-            if not team:
-                raise ValueError(f"team {team_id} not found")
-            agents = repo.list_agents(team_id)
-            for agent in agents:
-                self.codex.reset_session_files(agent.agent_id)
-            bootstrap_commands = [
-                self.codex.build_leader_console_command(team_id),
-                self.codex.build_worker_dashboard_command(team_id),
-            ]
-            session_name = self.tmux.create_team_layout(team_id, 2, bootstrap_commands)
-            panes = self.tmux.list_panes(session_name)
-            session_issues = []
-            ready_agents = []
-            leader_pane = panes[0] if panes else None
-            worker_pane = panes[1] if len(panes) > 1 else None
-            for agent in agents:
-                pane_id = leader_pane if agent.role == AgentRole.LEADER.value else worker_pane
-                shared_root, _ = self.worktrees.ensure_worktree(team_id, agent.agent_id)
-                repo.update_agent(
-                    agent,
-                    cwd=str(shared_root),
-                    git_branch=None,
-                    git_worktree_path=None,
-                    tmux_session=session_name,
-                    tmux_window="leader",
-                    tmux_pane=pane_id,
-                    status=AgentStatus.IDLE.value,
-                )
-                repo.add_session(team_id, agent.agent_id, session_name, "leader", pane_id)
-                repo.append_event(
-                    team_id=team_id,
-                    agent_id=agent.agent_id,
-                    event_type=event_type_name(EventType.SESSION_STARTED),
-                    payload=event_payload("Session started", session_name=session_name, pane_id=pane_id),
-                )
-                if not pane_id:
-                    session_issues.append(
-                        {
-                            "agent_id": agent.agent_id,
-                            "runtime_status": "no_session",
-                            "error_summary": "tmux pane could not be created.",
-                            "error_hint": "tmux layout creation did not return a pane for this agent.",
-                        }
-                    )
-                    continue
-                if agent.role == AgentRole.LEADER.value:
-                    runtime_paths = self.codex.bootstrap_session(agent.agent_id, pane_id, str(shared_root))
-                    runtime_health = self.runtime_health(agent)
-                    repo.append_event(
-                        team_id=team_id,
-                        agent_id=agent.agent_id,
-                        event_type=event_type_name(EventType.AGENT_HEARTBEAT),
-                        payload=event_payload("Runtime paths created", **runtime_paths),
-                    )
-                    if runtime_health["ready"]:
-                        ready_agents.append(agent.agent_id)
-                    else:
-                        session_issues.append(
-                            {
-                                "agent_id": agent.agent_id,
-                                "runtime_status": runtime_health["status"],
-                                "error_summary": runtime_health.get("error_summary"),
-                                "error_hint": runtime_health.get("error_hint"),
-                            }
-                        )
-                else:
-                    runtime_paths = {key: str(value) for key, value in self.codex.session_paths(agent.agent_id).items()}
-                    repo.append_event(
-                        team_id=team_id,
-                        agent_id=agent.agent_id,
-                        event_type=event_type_name(EventType.AGENT_HEARTBEAT),
-                        payload=event_payload("Worker dashboard attached", **runtime_paths),
-                    )
-                    ready_agents.append(agent.agent_id)
-            return {
-                "team_id": team_id,
-                "session_name": session_name,
-                "panes": panes,
-                "session_issues": session_issues,
-                "ready_agents": ready_agents,
-                "all_ready": len(ready_agents) == len(agents),
-            }
+    def _age_seconds(self, value: datetime | None) -> float | None:
+        if value is None:
+            return None
+        now = datetime.now(timezone.utc).replace(tzinfo=None)
+        return max(0.0, (now - value).total_seconds())
 
     def create_run(self, team_id: str, request: str):
         with session_scope(self.session_factory) as session:
@@ -369,6 +255,9 @@ class AlvisServices:
             context={"team_id": task.team_id, "run_id": task.run_id},
         )
 
+    def build_task_contract(self, task: TaskModel, agent: AgentModel) -> TaskContract:
+        return self._default_task_contract(task, agent)
+
     def _retry_count(self, repo: Repository, task_id: str) -> int:
         return len(
             [
@@ -418,10 +307,11 @@ class AlvisServices:
         return False
 
     def runtime_health(self, agent: AgentModel) -> dict:
-        if not agent.tmux_pane:
-            return {"status": "no_session", "ready": False}
         pane_alive = bool(agent.tmux_pane) and self.tmux.pane_exists(agent.tmux_pane)
         return self.codex.runtime_health(agent.agent_id, pane_exists=bool(pane_alive))
+
+    def interaction_specs_from_output(self, task: TaskModel, output: AgentOutput) -> list[dict]:
+        return self._interaction_specs_from_output(task, output)
 
     def can_dispatch_task(self, task_id: str, agent_id: str, *, require_live_session: bool = True) -> DispatchResult:
         task = self.get_task(task_id)
@@ -658,6 +548,31 @@ class AlvisServices:
             return [*parts, "exec", "--color", "never", "-"]
         return parts
 
+    def _task_runner_command(self, paths: dict[str, Path], cwd: str) -> list[str]:
+        runner = Path(__file__).resolve().parent / "runtime" / "noninteractive_task_runner.py"
+        return [
+            sys.executable,
+            str(runner),
+            "--cwd",
+            cwd,
+            "--codex-command",
+            self.settings.codex_command,
+            "--prompt-file",
+            str(paths["prompt"]),
+            "--heartbeat-file",
+            str(paths["heartbeat"]),
+            "--stdout-file",
+            str(paths["stdout"]),
+            "--stderr-file",
+            str(paths["stderr"]),
+            "--state-file",
+            str(paths["state"]),
+            "--schema-output-file",
+            str(paths["schema_output"]),
+            "--last-message-file",
+            str(paths["last_message"]),
+        ]
+
     def _codex_output_schema(self) -> dict:
         return {
             "type": "object",
@@ -734,66 +649,36 @@ class AlvisServices:
             return result, final_message, schema_output_text
 
     def _dispatch_task_inline(self, agent: AgentModel, contract: TaskContract, prompt: str, reason: str) -> DispatchResult:
-        result, final_message, schema_output = self._run_noninteractive_codex(prompt, contract.cwd)
-        output = self.output_collector.summarize_task_output(
-            agent_id=agent.agent_id,
-            task_id=contract.task_id,
-            log_text=result.stdout,
-            final_message_text=final_message,
-            schema_output_text=schema_output,
-        )
-        if output.kind == "delta":
-            if result.returncode == 0:
-                parse_status = output.output_parse_status or "no_result_block"
-                parse_reason = "Missing ALVIS structured result block."
-                if parse_status == OutputCollector.PARSE_INVALID_RESULT_BLOCK:
-                    parse_reason = "Invalid ALVIS structured result block."
-                if parse_status == OutputCollector.PARSE_SCHEMA_PARSE_FAILED:
-                    parse_reason = "Structured Codex output could not be parsed as JSON."
-                if parse_status == OutputCollector.PARSE_SCHEMA_CONTRACT_FAILED:
-                    parse_reason = "Structured Codex output did not match the expected contract."
-                output = AgentOutput(
-                    task_id=contract.task_id,
-                    agent_id=agent.agent_id,
-                    kind="final",
-                    status_signal="blocked",
-                    summary="Task did not produce a valid structured result block.",
-                    output_parse_status=parse_status,
-                    changed_files=output.changed_files,
-                    test_results=output.test_results,
-                    risk_flags=output.risk_flags or [parse_reason],
-                )
-            else:
-                output = AgentOutput(
-                    task_id=contract.task_id,
-                    agent_id=agent.agent_id,
-                    kind="final",
-                    summary=f"Inline task execution failed with exit code {result.returncode}.",
-                    status_signal="blocked",
-                    output_parse_status=output.output_parse_status,
-                    risk_flags=[result.stderr.strip() or "inline execution failed"],
-                )
-        self.append_event(
-            team_id=agent.team_id,
-            run_id=contract.context.get("run_id"),
-            task_id=contract.task_id,
-            agent_id=agent.agent_id,
-            event_type=event_type_name(EventType.AGENT_OUTPUT_FINAL if output.kind == "final" else EventType.AGENT_OUTPUT_DELTA),
-            payload=output.model_dump(),
-        )
-        if result.returncode != 0 or output.status_signal == "blocked":
+        paths = self.codex.reset_session_files(agent.agent_id)
+        paths["prompt"].write_text(prompt, encoding="utf-8")
+        command = self._task_runner_command(paths, contract.cwd)
+        try:
+            subprocess.Popen(
+                command,
+                cwd=contract.cwd,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                stdin=subprocess.DEVNULL,
+                start_new_session=True,
+            )
+        except OSError as exc:
             self.append_event(
                 team_id=agent.team_id,
                 run_id=contract.context.get("run_id"),
                 task_id=contract.task_id,
                 agent_id=agent.agent_id,
                 event_type=event_type_name(EventType.ERROR_RAISED),
-                payload=event_payload(
-                    "Task execution via background runner needs attention",
-                    reason=reason,
-                    exit_code=result.returncode,
-                ),
+                payload=event_payload("Task launch failed", reason=str(exc)),
             )
+            return DispatchResult(ok=False, reason="launch_failed", prompt=prompt)
+        self.append_event(
+            team_id=agent.team_id,
+            run_id=contract.context.get("run_id"),
+            task_id=contract.task_id,
+            agent_id=agent.agent_id,
+            event_type=event_type_name(EventType.AGENT_STATUS_CHANGED),
+            payload=event_payload("Agent background task launched", status=AgentStatus.RUNNING.value, reason=reason),
+        )
         return DispatchResult(ok=True, reason=reason, prompt=prompt)
 
     def append_event(self, **kwargs):
@@ -868,7 +753,12 @@ class AlvisServices:
                 task_id=task_id,
                 agent_id=source_agent_id,
                 event_type=event_type_name(EventType.INTERACTION_CREATED),
-                payload=event_payload("Interaction created", interaction_id=interaction.interaction_id, kind=kind, **payload),
+                payload=event_payload(
+                    "Interaction created",
+                    interaction_id=interaction.interaction_id,
+                    interaction_kind=kind,
+                    **payload,
+                ),
             )
             return interaction
 
@@ -882,6 +772,111 @@ class AlvisServices:
         with session_scope(self.session_factory) as session:
             repo = Repository(session)
             return repo.list_interactions(team_id=team_id, run_id=run_id, status=status)
+
+    def summarize_pending_interactions(self, run_id: str) -> list[dict]:
+        summaries = []
+        for item in self.list_interactions(run_id=run_id, status=InteractionStatus.PENDING):
+            payload = item.payload or {}
+            message = (
+                payload.get("message")
+                or payload.get("detail")
+                or payload.get("summary")
+                or payload.get("output_summary")
+                or item.kind
+            )
+            summaries.append(
+                {
+                    "interaction_id": item.interaction_id,
+                    "task_id": item.task_id,
+                    "source_agent_id": item.source_agent_id,
+                    "target_agent_id": item.target_agent_id,
+                    "target_role_alias": item.target_role_alias,
+                    "kind": item.kind,
+                    "status": item.status,
+                    "message": message,
+                    "payload": payload,
+                }
+            )
+        return summaries
+
+    def answer_pending_interaction(self, team_id: str, answer: str) -> dict:
+        runs = self.list_team_runs(team_id)
+        latest_run = runs[0] if runs else None
+        if latest_run is None:
+            raise ValueError(f"team {team_id} has no active run")
+        pending = [
+            item
+            for item in self.list_interactions(run_id=latest_run.run_id, status=InteractionStatus.PENDING)
+            if item.target_role_alias == "leader" or item.target_agent_id == f"{team_id}-leader"
+        ]
+        if not pending:
+            raise ValueError("no pending leader interaction")
+        interaction = pending[0]
+        source_task = self.get_task(interaction.task_id) if interaction.task_id else None
+        resolved_ids = []
+        guidance_payload = {"leader_answer": answer, "leader_summary": answer, "leader_guidance": [answer]}
+        for item in pending:
+            if source_task and item.task_id != source_task.task_id:
+                continue
+            self.resolve_interaction(item.interaction_id, payload=guidance_payload)
+            resolved_ids.append(item.interaction_id)
+        followup_task_id = None
+        if source_task is not None:
+            followup_goal = (
+                f"Continue the original task with leader guidance.\n"
+                f"Original goal: {source_task.goal}\n"
+                f"Leader guidance: {answer}\n"
+            )
+            followup_task = self.create_task(
+                team_id=source_task.team_id,
+                run_id=source_task.run_id,
+                title=f"Leader follow-up: {source_task.title}",
+                goal=followup_goal,
+                review_required=source_task.review_required,
+                target_role_alias=source_task.target_role_alias,
+                owned_paths=source_task.owned_paths,
+                task_type="worker",
+                parent_task_id=source_task.task_id,
+            )
+            worker = next(
+                (
+                    candidate
+                    for candidate in self.list_worker_agents(team_id)
+                    if (candidate.role_alias or candidate.role) == source_task.target_role_alias
+                ),
+                None,
+            )
+            if worker is not None:
+                self.assign_task(followup_task.task_id, worker.agent_id)
+                dispatch = self.dispatch_task(worker.agent_id, self._default_task_contract(followup_task, worker))
+                self.append_event(
+                    team_id=team_id,
+                    run_id=source_task.run_id,
+                    task_id=followup_task.task_id,
+                    agent_id=worker.agent_id,
+                    event_type=event_type_name(EventType.LEADER_INSTRUCTION_CREATED),
+                    payload=event_payload(
+                        "Leader follow-up task created",
+                        source_task_id=source_task.task_id,
+                        interaction_id=interaction.interaction_id,
+                        new_task_id=followup_task.task_id,
+                        leader_answer=answer,
+                        prompt=dispatch.prompt,
+                    ),
+                )
+                followup_task_id = followup_task.task_id
+            self.update_task(
+                source_task.task_id,
+                status=TaskStatus.CANCELLED.value,
+                result_summary=f"Superseded by leader guidance: {answer}",
+            )
+        return {
+            "run_id": latest_run.run_id,
+            "interaction_id": interaction.interaction_id,
+            "resolved_interaction_ids": resolved_ids,
+            "followup_task_id": followup_task_id,
+            "leader_answer": answer,
+        }
 
     def resolve_interaction(self, interaction_id: str, *, payload: dict | None = None) -> InteractionModel | None:
         with session_scope(self.session_factory) as session:
@@ -898,7 +893,11 @@ class AlvisServices:
                 task_id=resolved.task_id,
                 agent_id=resolved.source_agent_id,
                 event_type=event_type_name(EventType.INTERACTION_RESOLVED),
-                payload=event_payload("Interaction resolved", interaction_id=resolved.interaction_id, kind=resolved.kind),
+                payload=event_payload(
+                    "Interaction resolved",
+                    interaction_id=resolved.interaction_id,
+                    interaction_kind=resolved.kind,
+                ),
             )
             return resolved
 
@@ -1198,19 +1197,57 @@ class AlvisServices:
     def refresh_agent_runtime(self, agent_id: str) -> AgentOutput | None:
         agent = self.get_agent(agent_id)
         paths = self.codex.session_paths(agent_id)
+        state = self.codex.read_session_state(agent_id)
         snapshot = self.output_collector.read_snapshot(paths["stdout"], paths["heartbeat"])
         if snapshot.heartbeat_at:
             self.record_heartbeat(agent_id, snapshot.heartbeat_at)
         task_id = agent.current_task_id
         if not task_id:
             return None
+        if state.get("status") != "exited":
+            return None
+        if state.get("output_collected"):
+            return None
         output = self.output_collector.summarize_task_output(
             agent_id=agent_id,
             task_id=task_id,
             log_text=snapshot.log_text,
+            final_message_text=paths["last_message"].read_text(encoding="utf-8") if paths["last_message"].exists() else None,
+            schema_output_text=paths["schema_output"].read_text(encoding="utf-8") if paths["schema_output"].exists() else None,
         )
-        if output.kind == "delta" and output.summary == "No usable task output captured yet.":
-            return None
+        exit_code = state.get("exit_code")
+        if output.kind == "delta":
+            if exit_code == 0:
+                parse_status = output.output_parse_status or OutputCollector.PARSE_NO_RESULT_BLOCK
+                parse_reason = "Missing ALVIS structured result block."
+                if parse_status == OutputCollector.PARSE_INVALID_RESULT_BLOCK:
+                    parse_reason = "Invalid ALVIS structured result block."
+                if parse_status == OutputCollector.PARSE_SCHEMA_PARSE_FAILED:
+                    parse_reason = "Structured Codex output could not be parsed as JSON."
+                if parse_status == OutputCollector.PARSE_SCHEMA_CONTRACT_FAILED:
+                    parse_reason = "Structured Codex output did not match the expected contract."
+                output = AgentOutput(
+                    task_id=task_id,
+                    agent_id=agent_id,
+                    kind="final",
+                    status_signal="blocked",
+                    summary="Task did not produce a valid structured result block.",
+                    output_parse_status=parse_status,
+                    changed_files=output.changed_files,
+                    test_results=output.test_results,
+                    risk_flags=output.risk_flags or [parse_reason],
+                )
+            else:
+                stderr_text = paths["stderr"].read_text(encoding="utf-8", errors="ignore").strip() if paths["stderr"].exists() else ""
+                output = AgentOutput(
+                    task_id=task_id,
+                    agent_id=agent_id,
+                    kind="final",
+                    summary=f"Inline task execution failed with exit code {exit_code}.",
+                    status_signal="blocked",
+                    output_parse_status=output.output_parse_status,
+                    risk_flags=[stderr_text or "background execution failed"],
+                )
         self.append_event(
             team_id=agent.team_id,
             run_id=self.get_task(task_id).run_id,
@@ -1221,6 +1258,8 @@ class AlvisServices:
             ),
             payload=output.model_dump(),
         )
+        state["output_collected"] = True
+        paths["state"].write_text(json.dumps(state), encoding="utf-8")
         task = self.get_task(task_id)
         existing = {
             (item.kind, item.payload.get("message"))
@@ -1239,6 +1278,19 @@ class AlvisServices:
                 source_agent_id=agent_id,
                 target_role_alias=spec.get("target_role_alias"),
                 task_id=task_id,
+            )
+        if exit_code not in (None, 0) or output.status_signal == "blocked":
+            self.append_event(
+                team_id=agent.team_id,
+                run_id=task.run_id,
+                task_id=task_id,
+                agent_id=agent_id,
+                event_type=event_type_name(EventType.ERROR_RAISED),
+                payload=event_payload(
+                    "Task execution via background runner needs attention",
+                    exit_code=exit_code,
+                    reason=state.get("reason") or "background_exec",
+                ),
             )
         return output
 
@@ -1269,9 +1321,10 @@ class AlvisServices:
 
     def inspect_runtime_state(self, team_id: str | None = None) -> dict:
         stale_heartbeat = []
-        missing_panes = []
-        session_not_ready = []
-        session_exited = []
+        missing_runtime_state = []
+        runtime_not_ready = []
+        exited_runners = []
+        uncollected_outputs = []
         orphaned_tasks = []
         orphaned_reviews = []
         dangling_runs = []
@@ -1286,14 +1339,21 @@ class AlvisServices:
             agent_by_id = {agent.agent_id: agent for agent in agents}
 
             for agent in agents:
-                pane_alive = bool(agent.tmux_pane) and self.tmux.pane_exists(agent.tmux_pane)
-                if agent.tmux_pane and not pane_alive:
-                    missing_panes.append(agent.agent_id)
-                health = self.codex.runtime_health(agent.agent_id, pane_exists=bool(pane_alive))
-                if pane_alive and health["status"] in {"not_ready", "error"}:
-                    session_not_ready.append(agent.agent_id)
-                if pane_alive and health["status"] == "exited":
-                    session_exited.append(agent.agent_id)
+                has_active_assignment = bool(agent.current_task_id or agent.status in self.ACTIVE_AGENT_STATUSES)
+                health = self.runtime_health(agent)
+                state = self.codex.read_session_state(agent.agent_id)
+                if not has_active_assignment:
+                    if agent.agent_id in stale_agent_ids:
+                        stale_heartbeat.append(agent.agent_id)
+                    continue
+                if health["status"] in {"not_ready", "missing_pane"}:
+                    missing_runtime_state.append(agent.agent_id)
+                elif health["status"] == "starting":
+                    runtime_not_ready.append(agent.agent_id)
+                elif health["status"] == "exited":
+                    exited_runners.append(agent.agent_id)
+                    if state.get("output_collected") is not True:
+                        uncollected_outputs.append(agent.agent_id)
                 if agent.agent_id in stale_agent_ids:
                     stale_heartbeat.append(agent.agent_id)
 
@@ -1311,10 +1371,10 @@ class AlvisServices:
                     orphaned_tasks.append(task.task_id)
                     continue
                 health = self.runtime_health(agent)
-                if agent.tmux_pane and not self.tmux.pane_exists(agent.tmux_pane):
+                if health["status"] in {"not_ready", "missing_pane", "starting"}:
                     orphaned_tasks.append(task.task_id)
                     continue
-                if health["status"] in {"not_ready", "error", "exited"}:
+                if health["status"] == "exited" and self.codex.read_session_state(agent.agent_id).get("output_collected") is True:
                     orphaned_tasks.append(task.task_id)
                     continue
                 if agent.agent_id in stale_agent_ids:
@@ -1329,10 +1389,11 @@ class AlvisServices:
                     dangling_runs.append(run.run_id)
 
         return {
-            "missing_panes": sorted(set(missing_panes)),
+            "missing_runtime_state": sorted(set(missing_runtime_state)),
             "stale_heartbeat": sorted(set(stale_heartbeat)),
-            "session_not_ready": sorted(set(session_not_ready)),
-            "session_exited": sorted(set(session_exited)),
+            "runtime_not_ready": sorted(set(runtime_not_ready)),
+            "exited_runners": sorted(set(exited_runners)),
+            "uncollected_outputs": sorted(set(uncollected_outputs)),
             "orphaned_tasks": sorted(set(orphaned_tasks)),
             "orphaned_reviews": sorted(set(orphaned_reviews)),
             "dangling_runs": sorted(set(dangling_runs)),
@@ -1344,16 +1405,16 @@ class AlvisServices:
             if task.status != TaskStatus.BLOCKED.value or not task.agent_id:
                 continue
             agent = agent_map.get(task.agent_id)
-            if not agent or not agent.tmux_pane or not self.tmux.pane_exists(agent.tmux_pane):
+            if not agent or not self.runtime_health(agent)["ready"]:
                 repo.append_event(
                     team_id=task.team_id,
                     run_id=task.run_id,
                     task_id=task.task_id,
                     agent_id=task.agent_id,
                     event_type=event_type_name(EventType.TASK_RETRY_SKIPPED),
-                    payload=event_payload("Retry skipped", reason="pane unavailable"),
+                    payload=event_payload("Retry skipped", reason="runtime unavailable"),
                 )
-                actions_taken.append({"type": "retry_skipped", "task_id": task.task_id, "reason": "pane unavailable"})
+                actions_taken.append({"type": "retry_skipped", "task_id": task.task_id, "reason": "runtime unavailable"})
                 continue
 
             retry_count = self._retry_count(repo, task.task_id)
@@ -1459,7 +1520,7 @@ class AlvisServices:
                 if task.status != TaskStatus.BLOCKED.value or not task.agent_id:
                     continue
                 agent = next((item for item in agents if item.agent_id == task.agent_id), None)
-                if not agent or not agent.tmux_pane or not self.tmux.pane_exists(agent.tmux_pane):
+                if not agent:
                     continue
                 if not self.runtime_health(agent)["ready"]:
                     continue
@@ -1481,6 +1542,9 @@ class AlvisServices:
                     "task": agent.current_task_id,
                     "last_heartbeat_at": None if not agent.last_heartbeat_at else agent.last_heartbeat_at.isoformat(),
                     "runtime_health": runtime_health,
+                    "runtime_status": runtime_health.get("status"),
+                    "pid": runtime_health.get("pid"),
+                    "exit_code": runtime_health.get("exit_code"),
                 }
                 agent_payloads.append(agent_payload)
                 if runtime_health.get("error_summary"):
@@ -1492,6 +1556,52 @@ class AlvisServices:
                             "error_hint": runtime_health.get("error_hint"),
                         }
                     )
+            pending_interactions = [
+                {
+                    "interaction_id": item.interaction_id,
+                    "task_id": item.task_id,
+                    "source_agent_id": item.source_agent_id,
+                    "target_agent_id": item.target_agent_id,
+                    "target_role_alias": item.target_role_alias,
+                    "kind": item.kind,
+                    "status": item.status,
+                    "message": (item.payload or {}).get("message")
+                    or (item.payload or {}).get("detail")
+                    or (item.payload or {}).get("summary"),
+                    "payload": item.payload,
+                }
+                for item in interactions
+                if item.status == InteractionStatus.PENDING.value
+            ]
+            execution_summary = {
+                "dispatching_tasks": len(
+                    [task for task in tasks if task.status in {TaskStatus.ASSIGNED.value, TaskStatus.RUNNING.value}]
+                ),
+                "waiting_interactions": len(pending_interactions),
+                "blocked_tasks": len([task for task in tasks if task.status == TaskStatus.BLOCKED.value]),
+                "last_important_event": None,
+                "run_age_seconds": self._age_seconds(latest_run.created_at) if latest_run else None,
+                "latest_task_update_age_seconds": min(
+                    (self._age_seconds(task.updated_at) for task in tasks if task.updated_at),
+                    default=None,
+                ),
+                "oldest_pending_interaction_age_seconds": min(
+                    (self._age_seconds(item.created_at) for item in interactions if item.status == InteractionStatus.PENDING.value),
+                    default=None,
+                ),
+            }
+            for event in reversed(repo.list_events(team_id=team_id, run_id=latest_run.run_id) if latest_run else []):
+                if event.event_type in {
+                    event_type_name(EventType.TASK_ASSIGNED),
+                    event_type_name(EventType.AGENT_OUTPUT_FINAL),
+                    event_type_name(EventType.INTERACTION_CREATED),
+                    event_type_name(EventType.INTERACTION_RESOLVED),
+                    event_type_name(EventType.LEADER_INSTRUCTION_CREATED),
+                    event_type_name(EventType.ERROR_RAISED),
+                    event_type_name(EventType.LEADER_OUTPUT_READY),
+                }:
+                    execution_summary["last_important_event"] = event.payload.get("summary") or event.event_type
+                    break
             return {
                 "team_id": team.team_id,
                 "session_name": team.session_name,
@@ -1511,6 +1621,7 @@ class AlvisServices:
                         "updated_at": checkpoint.updated_at.isoformat(),
                     },
                 },
+                "execution_summary": execution_summary,
                 "tasks": [
                     {
                         "task_id": task.task_id,
@@ -1560,20 +1671,7 @@ class AlvisServices:
                     for task in tasks
                     if task.title.startswith("Redo:")
                 ],
-                "pending_interactions": [
-                    {
-                        "interaction_id": item.interaction_id,
-                        "task_id": item.task_id,
-                        "source_agent_id": item.source_agent_id,
-                        "target_agent_id": item.target_agent_id,
-                        "target_role_alias": item.target_role_alias,
-                        "kind": item.kind,
-                        "status": item.status,
-                        "payload": item.payload,
-                    }
-                    for item in interactions
-                    if item.status == InteractionStatus.PENDING.value
-                ],
+                "pending_interactions": pending_interactions,
                 "leader_queue": [
                     {
                         "interaction_id": item.interaction_id,
@@ -1609,6 +1707,14 @@ class AlvisServices:
         inspection = self.inspect_runtime_state(team_id)
         actions_taken: list[dict] = []
         reconciled_runs: list[str] = []
+        collected_outputs: list[str] = []
+
+        if team_id:
+            for agent_id in inspection["uncollected_outputs"]:
+                output = self.refresh_agent_runtime(agent_id)
+                if output is not None:
+                    collected_outputs.append(agent_id)
+                    actions_taken.append({"type": "output_collected", "agent_id": agent_id, "task_id": output.task_id})
         with session_scope(self.session_factory) as session:
             repo = Repository(session)
             agents = repo.list_agents(team_id) if team_id else repo.list_all_agents()
@@ -1620,15 +1726,15 @@ class AlvisServices:
                 tasks.extend(repo.list_run_tasks(run.run_id))
             task_map = {task.task_id: task for task in tasks}
 
-            for agent_id in inspection["missing_panes"]:
+            for agent_id in inspection["missing_runtime_state"]:
                 agent = agent_map.get(agent_id)
                 if not agent:
                     continue
                 repo.update_agent(agent, status=AgentStatus.BLOCKED.value)
-                actions_taken.append({"type": "agent_blocked_missing_pane", "agent_id": agent_id})
+                actions_taken.append({"type": "agent_blocked_missing_runtime", "agent_id": agent_id})
                 if agent.current_task_id and agent.current_task_id in task_map:
                     repo.update_task(task_map[agent.current_task_id], status=TaskStatus.BLOCKED.value)
-                    actions_taken.append({"type": "task_blocked_missing_pane", "task_id": agent.current_task_id})
+                    actions_taken.append({"type": "task_blocked_missing_runtime", "task_id": agent.current_task_id})
 
             for agent_id in inspection["stale_heartbeat"]:
                 agent = agent_map.get(agent_id)
@@ -1710,18 +1816,13 @@ class AlvisServices:
         return {
             **inspection,
             "actions_taken": actions_taken,
+            "collected_outputs": collected_outputs,
             "reconciled_runs": reconciled_runs,
             "retry_enabled": retry,
             "scope_conflicts": conflict_report.get("scope_conflicts", []),
             "session_errors": session_errors,
             **cleanup_report,
         }
-
-    def attach_tmux(self, team_id: str) -> int:
-        return self.tmux.attach(self.tmux.team_session_name(team_id))
-
-    def shutdown_tmux_team(self, team_id: str) -> None:
-        self.tmux.kill_session(self.tmux.team_session_name(team_id))
 
     def remove_team(self, team_id: str) -> dict:
         session_name = self.tmux.team_session_name(team_id)

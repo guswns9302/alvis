@@ -6,20 +6,7 @@ from starlette.responses import JSONResponse
 
 from app.bootstrap import bootstrap_services
 from app.graph.supervisor import Supervisor, SupervisorDeps
-from app.sessions.tmux_manager import TmuxUnavailableError
 from app.version import __version__
-
-
-class TeamCreateRequest(BaseModel):
-    workspace_root: str | None = None
-    team_id: str
-    worker_1_role: str
-    worker_2_role: str
-
-
-class TeamRequest(BaseModel):
-    workspace_root: str | None = None
-    team_id: str
 
 
 class RunRequest(BaseModel):
@@ -47,17 +34,6 @@ def create_app() -> FastAPI:
 
     def services_for(workspace_root: str | None = None):
         return bootstrap_services(workspace_root)
-
-    @app.exception_handler(TmuxUnavailableError)
-    async def tmux_unavailable_handler(_: Request, exc: TmuxUnavailableError):
-        return JSONResponse(
-            status_code=503,
-            content={
-                "error_code": "tmux_unavailable",
-                "detail": str(exc),
-                "hint": "tmux 경로를 daemon이 찾지 못했습니다. `alvis doctor`와 `alvis daemon restart`를 실행하거나 install.sh를 다시 실행하세요.",
-            },
-        )
 
     @app.exception_handler(ValueError)
     async def value_error_handler(_: Request, exc: ValueError):
@@ -88,54 +64,22 @@ def create_app() -> FastAPI:
         return {
             "status": "ok",
             "version": __version__,
-            "daemon_tmux_path": diagnostics["tmux_path"],
-            "daemon_tmux_available": diagnostics["tmux_available"],
             "daemon_codex_command": diagnostics["codex_command"],
             "daemon_workspace_root": diagnostics["workspace_root"],
             "daemon_data_dir": diagnostics["data_dir"],
+            "daemon_db_path": diagnostics["db_path"],
+            "daemon_runtime_dir": diagnostics["runtime_dir"],
+            "daemon_team_count": diagnostics["team_count"],
         }
 
     @app.get("/version")
     def version():
         return {"version": __version__}
 
-    @app.post("/teams/create")
-    def create_team(payload: TeamCreateRequest):
-        services = services_for(payload.workspace_root)
-        provisioned = services.provision_team(payload.team_id, payload.worker_1_role, payload.worker_2_role)
-        team = provisioned["team"]
-        start_result = provisioned["start_result"]
-        return {
-            "team_id": team.team_id,
-            "workers": [
-                {
-                    "agent_id": f"{payload.team_id}-worker-1",
-                    "role": payload.worker_1_role.split(":", 1)[0],
-                    "role_alias": payload.worker_1_role.split(":", 1)[1] if ":" in payload.worker_1_role else payload.worker_1_role,
-                },
-                {
-                    "agent_id": f"{payload.team_id}-worker-2",
-                    "role": payload.worker_2_role.split(":", 1)[0],
-                    "role_alias": payload.worker_2_role.split(":", 1)[1] if ":" in payload.worker_2_role else payload.worker_2_role,
-                },
-            ],
-            "start_result": start_result,
-        }
-
     @app.post("/start")
     def start_workspace(payload: WorkspaceRequest):
         services = services_for(payload.workspace_root)
         return services.start_or_attach_default_team()
-
-    @app.post("/teams/start")
-    def start_team(payload: TeamRequest):
-        services = services_for(payload.workspace_root)
-        return services.start_team(payload.team_id)
-
-    @app.post("/teams/remove")
-    def remove_team(payload: TeamRequest):
-        services = services_for(payload.workspace_root)
-        return services.remove_team(payload.team_id)
 
     @app.post("/runs")
     def run(payload: RunRequest):

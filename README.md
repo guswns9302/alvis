@@ -1,16 +1,15 @@
 # Alvis
 
-`alvis` is a CLI-first orchestrator for teams of AI agents backed by `LangGraph`, `tmux`, and `Codex CLI`.
+`alvis` is a CLI-first multi-worker orchestrator backed by `LangGraph`, `Codex CLI`, and a local workspace-scoped SQLite state store.
 
 ## Requirements
 
 - Python 3.12+
-- `tmux`
 - `codex` CLI on `PATH`
 
-## Global Install
+## Install
 
-Install Alvis into `~/.alvis`, create a global `alvis` wrapper, and start the background daemon:
+Install Alvis into `~/.alvis`, create the global `alvis` wrapper, and start the background daemon:
 
 ```bash
 /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/guswns9302/alvis/main/install.sh)"
@@ -21,108 +20,99 @@ After install:
 ```bash
 alvis version
 alvis doctor
-alvis daemon status
+alvis start
 ```
 
 ## Quick Start
 
-Global install is the default user path. The repo-local bootstrap flow still exists for development:
+Use the Rich REPL:
 
 ```bash
-./scripts/bootstrap.sh
-source .venv/bin/activate
-alvis team create
-# tmux attach 후 leader pane에서 요청 입력
-# 예: Investigate flaky tests in billing
-# worker 완료 후 LangGraph가 reviewer handoff, redo, leader 최종 출력 여부를 자동 판단
-alvis recover --team-id demo --retry
-alvis cleanup --team-id demo
-alvis team remove demo
+alvis start
 ```
 
-## Installed Runtime Model
+Inside the REPL:
+
+- enter plain text to start a new request
+- `/status` to inspect the latest run
+- `/logs` to inspect recent important events
+- `/clean` to remove workspace teams and exit
+- `/quit` to leave the REPL
+- `/shutdown` to remove the current team and exit
+
+If Alvis asks a follow-up question during a run, answer directly in the same prompt. The run will resume automatically.
+
+Non-interactive commands are also available:
+
+```bash
+alvis run <team_id> "Compare Python and Java"
+alvis status <team_id>
+alvis logs <team_id>
+alvis clean
+```
+
+## Runtime Model
+
+- `LangGraph` is the orchestration control plane
+- worker tasks run through non-interactive `codex exec`
+- worker outputs are schema-first structured results
+- `SQLite` stores teams, runs, tasks, interactions, checkpoints, and events
+- runtime files under the workspace data directory track heartbeat, process state, stdout, stderr, prompt, and structured output artifacts
+- each team is fixed to `leader 1 + worker 2`
+- the default worker aliases are `executor` and `reviewer`
+
+## Installed Layout
 
 - `~/.alvis/app`: installed application source
 - `~/.alvis/venv`: execution virtualenv
-- `~/.alvis/data/workspaces/<workspace-id>`: per-workspace DB/log/runtime state
+- `~/.alvis/data/workspaces/<workspace-id>`: per-workspace DB, logs, and runtime files
 - `~/.local/bin/alvis`: global wrapper entrypoint
-- `launchd`: keeps the local Alvis daemon running in the background
+- `launchd`: keeps the Alvis daemon available for daemon-backed commands
 
 ## Upgrade
 
 ```bash
 alvis upgrade
-alvis upgrade --version v0.1.0
+alvis upgrade --version v0.2.1
 ```
 
-The upgrade path uses GitHub releases/tags and restarts the background daemon after reinstalling the package into `~/.alvis/venv`.
+The upgrade path reinstalls the package, restarts the daemon, and verifies daemon version alignment with the CLI version.
 
-Leader pane supports:
+Recommended verification after upgrade:
 
-- entering a new request directly
-- `/refresh`
-- `/status`
-- `/quit`
+```bash
+alvis doctor
+alvis start
+```
 
-## Supported Use
+## Recovery and Reset
 
-- Single user
-- Single machine
-- Single repository
-- Experimental local operations
-
-## Data And Reset Policy
-
-- Runtime state lives under `~/.alvis/data/workspaces/<workspace-id>/`
-- Main SQLite DB path is workspace-scoped under that directory
-- Before upgrading local schema, back up the relevant workspace data directory
-- Schema compatibility is not guaranteed yet; local DB reset is allowed for now
-- There is no formal migration system yet; this project currently favors explicit backup and reset over in-place schema upgrades
-
-## Reset Playbook
-
-When local schema or runtime state becomes inconsistent:
+Runtime state is workspace-scoped. If a workspace becomes inconsistent:
 
 ```bash
 cp -R ~/.alvis ~/.alvis.backup
-alvis status demo
-alvis recover --team-id demo
-alvis cleanup --team-id demo
-rm -f ~/.alvis/data/workspaces/<workspace-id>/alvis.db
+alvis doctor
+alvis recover
+alvis clean
 ```
 
-After reset, recreate the team and start a fresh session:
+If you need a full local reset, remove the workspace DB under `~/.alvis/data/workspaces/<workspace-id>/` after taking a backup.
 
-```bash
-alvis team create
-```
-
-Use reset only for local recovery. If there are active tasks or automatic handoffs in progress, inspect them with `status`, `recover`, and `cleanup` before deleting anything.
+Use `alvis recover` when a run looks stuck, a worker exited without a final answer, or a pending task was interrupted mid-run. Use `alvis clean` when you want to remove the current workspace team state entirely and start fresh.
 
 ## Manual Verification
 
 ```bash
-alvis team create
-# tmux attach 후 leader pane에서 요청 입력
-alvis status demo
-alvis logs demo
-alvis recover --team-id demo
-alvis recover --team-id demo --retry
-alvis cleanup --team-id demo
-alvis team remove demo
+alvis start
+alvis status <team_id>
+alvis logs <team_id>
+alvis clean
 ```
 
 ## Core Principles
 
-- `LangGraph` is the control plane.
-- A background daemon is the default control-plane entrypoint for user CLI calls.
-- `tmux` is execution UI, not source of truth.
-- Leader input happens in the tmux leader console.
-- Leader is not a manual approver in the default flow.
-- `SQLite` stores teams, tasks, sessions, interactions, handoffs, and events.
-- Each team is fixed to `leader 1 + worker 2`.
-- Workers have fixed role aliases chosen at team creation time.
-- The install location and the active workspace are different concepts; Alvis is globally installed but works against the current project directory.
-- All agents share the same active project root, and file ownership is controlled by task `owned_paths`.
-- Worker completion is routed automatically by `LangGraph`; there is no manual review approval step in the default flow.
-- If a worker output is invalid or off-target, `LangGraph` prefers automatic redo over finalizing a bad result.
+- `LangGraph` makes task routing, redo, reviewer handoff, interaction, and finalization decisions
+- worker completion is automatic; there is no manual approval step in the default path
+- if worker output is invalid or off-target, Alvis prefers automatic redo over finalizing a bad result
+- the install location and active workspace are different concepts; Alvis is globally installed but operates on the current project directory
+- all agents share the same workspace root, and file ownership is constrained by task `owned_paths`

@@ -20,10 +20,7 @@ class LaunchdManager:
 
     def _daemon_path(self) -> str:
         path_entries = []
-        tmux_path = self.settings.tmux_path or os.getenv("ALVIS_TMUX_PATH")
         codex_command = self.settings.codex_command
-        if tmux_path:
-            path_entries.append(str(Path(tmux_path).expanduser().resolve().parent))
         codex_resolved = shutil.which(codex_command)
         if codex_resolved:
             path_entries.append(str(Path(codex_resolved).resolve().parent))
@@ -69,8 +66,6 @@ class LaunchdManager:
     <string>{self.settings.daemon_host}</string>
     <key>ALVIS_DAEMON_PORT</key>
     <string>{self.settings.daemon_port}</string>
-    <key>ALVIS_TMUX_PATH</key>
-    <string>{self.settings.tmux_path or ""}</string>
     <key>ALVIS_CODEX_COMMAND</key>
     <string>{self.settings.codex_command}</string>
   </dict>

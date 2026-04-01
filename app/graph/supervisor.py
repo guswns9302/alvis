@@ -11,7 +11,7 @@ except ImportError:  # pragma: no cover
     StateGraph = None
 
 from app.core.events import event_payload, event_type_name
-from app.enums import AgentRole, EventType, RunStatus, TaskStatus
+from app.enums import AgentRole, EventType, InteractionStatus, RunStatus, TaskStatus
 from app.graph.state import AlvisRunState
 from app.logging import get_logger
 from app.schemas import TaskContract
@@ -36,6 +36,7 @@ class Supervisor:
     def __init__(self, deps: SupervisorDeps):
         self.deps = deps
         self.log = get_logger(__name__)
+        self._compiled_graphs: dict[str, Any] = {}
 
     def _extract_paths(self, request: str) -> list[str]:
         tokens = [token.strip("`'\",.") for token in request.split()]
@@ -46,21 +47,57 @@ class Supervisor:
                     paths.append(token)
         return paths or ["."]
 
+    def _plan_template(self, request: str) -> tuple[str, str, str]:
+        lowered = request.lower()
+        if any(keyword in lowered for keyword in ("compare", "versus", " vs ", "analysis", "analyze", "report", "비교", "차이", "분석", "보고서")):
+            return (
+                "Research and draft findings",
+                f"Research the request, compare the relevant options, and draft findings for: {request}",
+                "Validate the findings, identify weak claims, and prepare the final answer.",
+            )
+        if any(keyword in lowered for keyword in ("review", "audit", "검토", "리뷰", "감사")):
+            return (
+                "Inspect and assess work",
+                f"Inspect the target subject, identify risks or issues, and draft an assessment for: {request}",
+                "Validate the assessment, confirm important findings, and prepare the final verdict.",
+            )
+        return (
+            "Implement changes",
+            f"Implement the requested work for: {request}",
+            "Validate the implementation output and prepare the final answer.",
+        )
+
     def create_plan(self, request: str, workers: list[dict[str, str]]) -> list[dict[str, Any]]:
         primary = next((worker for worker in workers if worker["role"] != "reviewer"), workers[0])
-        return [
+        primary_title, primary_goal, reviewer_goal = self._plan_template(request)
+        plan = [
             {
-                "title": "Implement changes",
-                "goal": f"Implement the requested work for: {request}",
+                "title": primary_title,
+                "goal": primary_goal,
                 "target_role_alias": primary["role_alias"],
                 "owned_paths": self._extract_paths(request),
                 "review_required": False,
             }
         ]
+        reviewer = next((worker for worker in workers if worker["role"] == "reviewer"), None)
+        if reviewer is not None:
+            plan.append(
+                {
+                    "title": "Validate and summarize",
+                    "goal": f"{reviewer_goal}\nOriginal request: {request}",
+                    "target_role_alias": reviewer["role_alias"],
+                    "owned_paths": [],
+                    "review_required": False,
+                    "parent_index": 0,
+                }
+            )
+        return plan
 
-    def build_graph(self):
+    def build_graph(self, entry_point: str = "ingest_request"):
         if StateGraph is None:
             return None
+        if entry_point in self._compiled_graphs:
+            return self._compiled_graphs[entry_point]
         graph = StateGraph(AlvisRunState)
         graph.add_node("ingest_request", self.ingest_request)
         graph.add_node("plan_tasks", self.plan_tasks)
@@ -75,11 +112,27 @@ class Supervisor:
         graph.add_edge("select_agents", "dispatch_tasks")
         graph.add_edge("dispatch_tasks", "wait_for_updates")
         graph.add_edge("wait_for_updates", "evaluate_progress")
-        graph.add_edge("evaluate_progress", "route_interactions")
-        graph.add_edge("route_interactions", "synthesize_result")
+        graph.add_conditional_edges(
+            "evaluate_progress",
+            self._route_after_evaluate_progress,
+            {
+                "wait_for_updates": "wait_for_updates",
+                "route_interactions": "route_interactions",
+            },
+        )
+        graph.add_conditional_edges(
+            "route_interactions",
+            self._route_after_interactions,
+            {
+                "wait_for_updates": "wait_for_updates",
+                "synthesize_result": "synthesize_result",
+            },
+        )
         graph.add_edge("synthesize_result", END)
-        graph.set_entry_point("ingest_request")
-        return graph.compile()
+        graph.set_entry_point(entry_point)
+        compiled = graph.compile()
+        self._compiled_graphs[entry_point] = compiled
+        return compiled
 
     def run(self, team_id: str, request: str) -> dict[str, Any]:
         state = AlvisRunState(
@@ -97,17 +150,21 @@ class Supervisor:
             final_output_ready=False,
             status=RunStatus.CREATED.value,
         )
-        return self._execute_from_node(state, "ingest_request")
+        graph = self.build_graph("ingest_request")
+        if graph is None:
+            return self._execute_from_node(state, "ingest_request")
+        return graph.invoke(state)
 
     def resume(self, run_id: str) -> AlvisRunState:
         checkpoint = self.deps.services.load_checkpoint(run_id)
         if checkpoint is None:
             raise ValueError(f"run {run_id} has no checkpoint to resume")
         state = AlvisRunState(**checkpoint.state)
-        state = self._refresh_state_from_db(state)
-        next_node = checkpoint.next_node
-
-        return self._execute_from_node(state, next_node)
+        graph = self.build_graph(checkpoint.next_node)
+        if graph is None:
+            state = self._refresh_state_from_db(state)
+            return self._execute_from_node(state, checkpoint.next_node)
+        return graph.invoke(state)
 
     def _refresh_state_from_db(self, state: AlvisRunState) -> AlvisRunState:
         if "run_id" not in state:
@@ -183,6 +240,24 @@ class Supervisor:
             state=dict(state),
         )
 
+    def _save_linear_checkpoint(self, state: AlvisRunState, current: str) -> None:
+        next_node = self.NODE_ORDER.get(current)
+        if next_node:
+            self._save_checkpoint(state, next_node)
+
+    def _route_after_evaluate_progress(self, state: AlvisRunState) -> str:
+        next_node = "wait_for_updates" if not state.get("pending_interactions") and state["status"] == RunStatus.RUNNING.value else "route_interactions"
+        self._save_checkpoint(state, next_node)
+        return next_node
+
+    def _route_after_interactions(self, state: AlvisRunState) -> str:
+        if state.get("pending_interactions"):
+            self._save_checkpoint(state, "route_interactions")
+            return "synthesize_result"
+        next_node = "wait_for_updates" if state["status"] == RunStatus.RUNNING.value else "synthesize_result"
+        self._save_checkpoint(state, next_node)
+        return next_node
+
     def _execute_from_node(self, state: AlvisRunState, node_name: str) -> AlvisRunState:
         current = node_name
         while True:
@@ -231,6 +306,21 @@ class Supervisor:
             return True
         return False
 
+    def _child_tasks(self, parent_task_id: str):
+        source = self.deps.services.get_task(parent_task_id)
+        return [candidate for candidate in self.deps.services.list_run_tasks(source.run_id) if candidate.parent_task_id == parent_task_id]
+
+    def _pending_child_task(self, parent_task_id: str, *, title_prefix: str | None = None):
+        for candidate in self._child_tasks(parent_task_id):
+            if title_prefix and not candidate.title.startswith(title_prefix):
+                continue
+            if candidate.agent_id:
+                continue
+            if candidate.status != TaskStatus.CREATED.value:
+                continue
+            return candidate
+        return None
+
     def _redo_source_task(self, task):
         current = task
         while current.title.startswith("Redo:") and current.parent_task_id:
@@ -277,7 +367,7 @@ class Supervisor:
             payload=event_payload("Worker handoff created", source_task_id=task.task_id, target_agent_id=reviewer.agent_id),
         )
         self.deps.services.assign_task(handoff_task.task_id, reviewer.agent_id)
-        dispatch = self.deps.services.dispatch_task(reviewer.agent_id, self.deps.services._default_task_contract(handoff_task, reviewer))  # type: ignore[attr-defined]
+        dispatch = self.deps.services.dispatch_task(reviewer.agent_id, self.deps.services.build_task_contract(handoff_task, reviewer))
         self.deps.services.append_event(
             team_id=state["team_id"],
             run_id=state["run_id"],
@@ -287,6 +377,43 @@ class Supervisor:
             payload=event_payload("Worker handoff dispatched", source_task_id=task.task_id, prompt=dispatch.prompt),
         )
         return handoff_task
+
+    def _dispatch_child_task(self, state: AlvisRunState, parent_task, child_task, summary: str):
+        worker = next(
+            (
+                candidate
+                for candidate in self.deps.services.list_worker_agents(state["team_id"])
+                if (candidate.role_alias or candidate.role) == child_task.target_role_alias
+            ),
+            None,
+        )
+        if worker is None:
+            return None
+        updated_goal = (
+            f"{child_task.goal}\n"
+            f"Source task: {parent_task.title}\n"
+            f"Source summary: {summary}\n"
+        )
+        self.deps.services.update_task(child_task.task_id, goal=updated_goal)
+        self.deps.services.append_event(
+            team_id=state["team_id"],
+            run_id=state["run_id"],
+            task_id=child_task.task_id,
+            agent_id=worker.agent_id,
+            event_type=event_type_name(EventType.TASK_HANDOFF_CREATED),
+            payload=event_payload("Worker handoff created", source_task_id=parent_task.task_id, target_agent_id=worker.agent_id),
+        )
+        self.deps.services.assign_task(child_task.task_id, worker.agent_id)
+        dispatch = self.deps.services.dispatch_task(worker.agent_id, self.deps.services.build_task_contract(child_task, worker))
+        self.deps.services.append_event(
+            team_id=state["team_id"],
+            run_id=state["run_id"],
+            task_id=child_task.task_id,
+            agent_id=worker.agent_id,
+            event_type=event_type_name(EventType.TASK_HANDOFF_DISPATCHED),
+            payload=event_payload("Worker handoff dispatched", source_task_id=parent_task.task_id, prompt=dispatch.prompt),
+        )
+        return child_task
 
     def _create_redo_task(self, state: AlvisRunState, task, output, reason: str):
         source_task = self._redo_source_task(task)
@@ -342,7 +469,7 @@ class Supervisor:
         if worker is None:
             return None
         self.deps.services.assign_task(redo_task.task_id, worker.agent_id)
-        dispatch = self.deps.services.dispatch_task(worker.agent_id, self.deps.services._default_task_contract(redo_task, worker))  # type: ignore[attr-defined]
+        dispatch = self.deps.services.dispatch_task(worker.agent_id, self.deps.services.build_task_contract(redo_task, worker))
         self.deps.services.append_event(
             team_id=state["team_id"],
             run_id=state["run_id"],
@@ -372,6 +499,7 @@ class Supervisor:
         )
         state["run_id"] = run.run_id
         state["status"] = RunStatus.RUNNING.value
+        self._save_linear_checkpoint(state, "ingest_request")
         return state
 
     def plan_tasks(self, state: AlvisRunState) -> AlvisRunState:
@@ -380,7 +508,12 @@ class Supervisor:
             for agent in self.deps.services.list_worker_agents(state["team_id"])
         ]
         tasks = []
+        created_tasks = []
         for task_spec in self.create_plan(state["user_request"], workers):
+            parent_task_id = None
+            parent_index = task_spec.get("parent_index")
+            if parent_index is not None and 0 <= parent_index < len(created_tasks):
+                parent_task_id = created_tasks[parent_index].task_id
             review_required = task_spec.get("review_required", False)
             task = self.deps.services.create_task(
                 team_id=state["team_id"],
@@ -390,6 +523,7 @@ class Supervisor:
                 review_required=review_required,
                 target_role_alias=task_spec.get("target_role_alias"),
                 owned_paths=task_spec.get("owned_paths", []),
+                parent_task_id=parent_task_id,
             )
             self.deps.services.append_event(
                 team_id=state["team_id"],
@@ -398,6 +532,7 @@ class Supervisor:
                 event_type=event_type_name(EventType.TASK_CREATED),
                 payload=event_payload("Task created", title=task.title, goal=task.goal),
             )
+            created_tasks.append(task)
             tasks.append(
                 {
                     "task_id": task.task_id,
@@ -412,6 +547,7 @@ class Supervisor:
                 }
             )
         state["tasks"] = tasks
+        self._save_linear_checkpoint(state, "plan_tasks")
         return state
 
     def select_agents(self, state: AlvisRunState) -> AlvisRunState:
@@ -430,8 +566,11 @@ class Supervisor:
             )
             if worker is None:
                 continue
+            if task.get("parent_task_id"):
+                continue
             assignments.append({"task_id": task["task_id"], "agent_id": worker.agent_id})
         state["assignments"] = assignments
+        self._save_linear_checkpoint(state, "select_agents")
         return state
 
     def dispatch_tasks(self, state: AlvisRunState) -> AlvisRunState:
@@ -477,14 +616,23 @@ class Supervisor:
                 event_type=event_type_name(EventType.AGENT_PROMPT_SENT),
                 payload=event_payload("Task dispatched", prompt=dispatch.prompt, task_title=task.title),
             )
+        self._save_linear_checkpoint(state, "dispatch_tasks")
         return state
 
     def wait_for_updates(self, state: AlvisRunState) -> AlvisRunState:
-        sleep(1)
+        state = self._refresh_state_from_db(state)
+        if state.get("pending_interactions"):
+            self._save_linear_checkpoint(state, "wait_for_updates")
+            return state
+        sleep(max(0.0, self.deps.services.settings.graph_poll_interval_seconds))
         self.deps.services.collect_outputs(state["team_id"])
+        self._save_linear_checkpoint(state, "wait_for_updates")
         return state
 
     def evaluate_progress(self, state: AlvisRunState) -> AlvisRunState:
+        state = self._refresh_state_from_db(state)
+        state["leader_waiting"] = False
+        state["waiting_for_leader_summary"] = None
         active = []
         completed = []
         blocked = []
@@ -528,6 +676,13 @@ class Supervisor:
                     }
                 )
                 continue
+
+            if task.parent_task_id and not task.agent_id:
+                if task.status == TaskStatus.CREATED.value:
+                    continue
+                parent_task = self.deps.services.get_task(task.parent_task_id)
+                if parent_task.status != TaskStatus.DONE.value:
+                    continue
 
             if not output or output.kind != "final":
                 active.append(
@@ -680,7 +835,7 @@ class Supervisor:
                     )
                     if worker:
                         self.deps.services.assign_task(followup_task.task_id, worker.agent_id)
-                        dispatch = self.deps.services.dispatch_task(worker.agent_id, self.deps.services._default_task_contract(followup_task, worker))  # type: ignore[attr-defined]
+                        dispatch = self.deps.services.dispatch_task(worker.agent_id, self.deps.services.build_task_contract(followup_task, worker))
                         self.deps.services.append_event(
                             team_id=state["team_id"],
                             run_id=state["run_id"],
@@ -726,7 +881,32 @@ class Supervisor:
                     or output.status_signal == "need_input"
                 )
             ):
+                existing = {
+                    (item.kind, (item.payload or {}).get("message"))
+                    for item in self.deps.services.list_interactions(run_id=task.run_id, status=InteractionStatus.PENDING)
+                    if item.task_id == task.task_id
+                }
+                for spec in self.deps.services.interaction_specs_from_output(task, output):
+                    key = (spec["kind"], spec.get("message"))
+                    if key in existing:
+                        continue
+                    self.deps.services.create_interaction(
+                        run_id=task.run_id,
+                        team_id=task.team_id,
+                        kind=spec["kind"],
+                        payload=spec,
+                        source_agent_id=task.agent_id,
+                        target_role_alias=spec.get("target_role_alias"),
+                        task_id=task.task_id,
+                    )
                 self.deps.services.update_task(task.task_id, status=TaskStatus.WAITING_INPUT.value, result_summary=summary)
+                interaction_summaries = [
+                    item.get("message")
+                    for item in self.deps.services.summarize_pending_interactions(task.run_id)
+                    if item.get("task_id") == task.task_id
+                ]
+                state["leader_waiting"] = True
+                state["waiting_for_leader_summary"] = next((item for item in interaction_summaries if item), summary)
                 pending_interactions.append(
                     {
                         "task_id": task.task_id,
@@ -795,7 +975,11 @@ class Supervisor:
                     )
                 continue
             if output and agent and agent.role != AgentRole.REVIEWER.value:
-                handoff_task = self._create_reviewer_handoff(state, task, output, summary)
+                handoff_task = self._pending_child_task(task.task_id, title_prefix="Validate and summarize")
+                if handoff_task is not None:
+                    handoff_task = self._dispatch_child_task(state, task, handoff_task, summary)
+                if handoff_task is None:
+                    handoff_task = self._create_reviewer_handoff(state, task, output, summary)
                 self.deps.services.update_task(task.task_id, status=TaskStatus.DONE.value, result_summary=summary)
                 completed.append(
                     {
@@ -843,6 +1027,7 @@ class Supervisor:
         state["blocked_tasks"] = blocked
         state["handoffs"] = handoffs
         state["active_tasks"] = active + pending_interactions + handoffs
+        state["pending_interactions"] = self.deps.services.summarize_pending_interactions(state["run_id"])
         state["review_requests"] = []
         state.setdefault("final_output_ready", False)
         if active or pending_interactions or handoffs:
@@ -854,35 +1039,31 @@ class Supervisor:
         return state
 
     def route_interactions(self, state: AlvisRunState) -> AlvisRunState:
-        pending = [item for item in self.deps.services.list_interactions(run_id=state["run_id"]) if item.status == "pending"]
-        state["pending_interactions"] = [
-            {
-                "interaction_id": item.interaction_id,
-                "task_id": item.task_id,
-                "source_agent_id": item.source_agent_id,
-                "target_agent_id": item.target_agent_id,
-                "target_role_alias": item.target_role_alias,
-                "kind": item.kind,
-                "status": item.status,
-                "payload": item.payload,
-            }
-            for item in pending
-        ]
+        state = self._refresh_state_from_db(state)
+        pending = self.deps.services.summarize_pending_interactions(state["run_id"])
+        state["pending_interactions"] = pending
         if pending:
+            state["leader_waiting"] = True
+            state["waiting_for_leader_summary"] = next((item.get("message") for item in pending if item.get("message")), None)
             for item in pending:
                 self.deps.services.append_event(
                     team_id=state["team_id"],
                     run_id=state["run_id"],
-                    task_id=item.task_id,
-                    agent_id=item.source_agent_id,
+                    task_id=item.get("task_id"),
+                    agent_id=item.get("source_agent_id"),
                     event_type=event_type_name(EventType.INTERACTION_ROUTED),
-                    payload=event_payload("Interaction routed to leader console", interaction_id=item.interaction_id),
+                    payload=event_payload("Interaction routed to leader console", interaction_id=item.get("interaction_id")),
                 )
             state["status"] = RunStatus.RUNNING.value
         return state
 
     def synthesize_result(self, state: AlvisRunState) -> AlvisRunState:
-        if state["active_tasks"]:
+        state = self._refresh_state_from_db(state)
+        if state.get("pending_interactions"):
+            question = next((item.get("message") for item in state["pending_interactions"] if item.get("message")), None)
+            final = f"Run is waiting for leader input. {question or 'Answer the pending worker question to continue.'}"
+            status = RunStatus.RUNNING
+        elif state["active_tasks"]:
             active_titles = ", ".join(task["title"] for task in state["active_tasks"])
             final = f"Run is still in progress. Waiting on tasks: {active_titles}."
             status = RunStatus.RUNNING
@@ -901,6 +1082,8 @@ class Supervisor:
             final = f"Run queued tasks successfully: {task_titles}."
             status = RunStatus.DONE
         self.deps.services.finalize_run(state["run_id"], status, final)
+        if status != RunStatus.RUNNING:
+            self.deps.services.clear_checkpoint(state["run_id"])
         state["final_response"] = final
         state["status"] = status.value
         return state

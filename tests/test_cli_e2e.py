@@ -124,7 +124,7 @@ def test_cli_status_json_includes_handoff_and_final_candidate_details(tmp_path):
     assert "summary" in status_json["final_output_candidate"]
 
 
-def test_cli_recover_reports_missing_panes_after_killed_session(tmp_path):
+def test_cli_recover_reports_runtime_issues(tmp_path):
     env = create_cli_env(tmp_path)
     services = bootstrap_cli_services(env)
     payload = services.start_or_attach_default_team()
@@ -134,7 +134,7 @@ def test_cli_recover_reports_missing_panes_after_killed_session(tmp_path):
     recover_json = json.loads(run_cli(env, "recover", "--team-id", team_id, "--json").stdout)
 
     assert "복구 보고서" in recover_pretty.stdout
-    assert "missing_panes" in recover_json
+    assert "missing_runtime_state" in recover_json
     assert "actions_taken" in recover_json
 
 

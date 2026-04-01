@@ -23,6 +23,7 @@ class Settings(BaseModel):
     codex_command: str = "codex"
     tmux_path: str | None = None
     heartbeat_timeout_seconds: int = 120
+    graph_poll_interval_seconds: float = 0.25
     review_retry_threshold: int = 2
     worker_signal_pulse_seconds: float = 1.5
     redo_attempt_limit: int = 1

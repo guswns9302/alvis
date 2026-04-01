@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import UTC, datetime
 
 from sqlalchemy import JSON, Boolean, DateTime, ForeignKey, Integer, String, Text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
@@ -9,12 +9,16 @@ from app.db.base import Base
 from app.enums import AgentRole, AgentStatus, InteractionStatus, ReviewStatus, RunStatus, TaskStatus
 
 
+def utcnow() -> datetime:
+    return datetime.now(UTC).replace(tzinfo=None)
+
+
 class TeamModel(Base):
     __tablename__ = "teams"
 
     team_id: Mapped[str] = mapped_column(String, primary_key=True)
     session_name: Mapped[str | None] = mapped_column(String, nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
 
     agents: Mapped[list["AgentModel"]] = relationship(back_populates="team")
 
@@ -35,7 +39,7 @@ class AgentModel(Base):
     tmux_pane: Mapped[str | None] = mapped_column(String, nullable=True)
     current_task_id: Mapped[str | None] = mapped_column(String, nullable=True)
     last_heartbeat_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
 
     team: Mapped["TeamModel"] = relationship(back_populates="agents")
 
@@ -48,8 +52,8 @@ class RunModel(Base):
     request: Mapped[str] = mapped_column(Text)
     status: Mapped[str] = mapped_column(String, default=RunStatus.CREATED.value)
     final_response: Mapped[str | None] = mapped_column(Text, nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
-    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
 
 
 class RunCheckpointModel(Base):
@@ -59,7 +63,7 @@ class RunCheckpointModel(Base):
     thread_id: Mapped[str] = mapped_column(String, index=True)
     next_node: Mapped[str] = mapped_column(String)
     state: Mapped[dict] = mapped_column(JSON, default=dict)
-    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
 
 
 class TaskModel(Base):
@@ -78,8 +82,8 @@ class TaskModel(Base):
     owned_paths: Mapped[list[str]] = mapped_column(JSON, default=list)
     review_required: Mapped[bool] = mapped_column(Boolean, default=False)
     result_summary: Mapped[str | None] = mapped_column(Text, nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
-    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
 
 
 class TaskAssignmentModel(Base):
@@ -88,7 +92,7 @@ class TaskAssignmentModel(Base):
     assignment_id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     task_id: Mapped[str] = mapped_column(ForeignKey("tasks.task_id"), index=True)
     agent_id: Mapped[str] = mapped_column(ForeignKey("agents.agent_id"), index=True)
-    assigned_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    assigned_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
     completed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
 
@@ -102,7 +106,7 @@ class ReviewRequestModel(Base):
     status: Mapped[str] = mapped_column(String, default=ReviewStatus.PENDING.value)
     summary: Mapped[str] = mapped_column(Text)
     details: Mapped[dict] = mapped_column(JSON, default=dict)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
     resolved_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
 
@@ -116,7 +120,7 @@ class SessionModel(Base):
     tmux_window: Mapped[str | None] = mapped_column(String, nullable=True)
     tmux_pane: Mapped[str | None] = mapped_column(String, nullable=True)
     status: Mapped[str] = mapped_column(String, default="started")
-    started_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    started_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
     exited_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
 
@@ -133,7 +137,7 @@ class InteractionModel(Base):
     kind: Mapped[str] = mapped_column(String)
     status: Mapped[str] = mapped_column(String, default=InteractionStatus.PENDING.value, index=True)
     payload: Mapped[dict] = mapped_column(JSON, default=dict)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
     resolved_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
 
@@ -147,4 +151,4 @@ class EventModel(Base):
     task_id: Mapped[str | None] = mapped_column(String, nullable=True, index=True)
     event_type: Mapped[str] = mapped_column(String, index=True)
     payload: Mapped[dict] = mapped_column(JSON, default=dict)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, index=True)

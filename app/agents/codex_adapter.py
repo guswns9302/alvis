@@ -2,14 +2,9 @@ from __future__ import annotations
 
 import json
 import re
-import shlex
-import sys
-import time
 from pathlib import Path
 
-from app.logging import get_logger
 from app.schemas import TaskContract
-from app.sessions.tmux_manager import TmuxManager
 
 
 class CodexAdapter:
@@ -34,26 +29,11 @@ class CodexAdapter:
 
     def __init__(
         self,
-        tmux: TmuxManager,
         codex_command: str,
-        log_dir: Path,
-        repo_root: Path,
         runtime_dir: Path,
-        env_overrides: dict[str, str] | None = None,
     ):
-        self.tmux = tmux
         self.codex_command = codex_command
-        self.log_dir = log_dir
-        self.repo_root = repo_root
         self.runtime_dir = runtime_dir
-        self.env_overrides = env_overrides or {}
-        self.log = get_logger(__name__)
-
-    def _export_prefix(self) -> str:
-        exports = ["export PYTHONUNBUFFERED=1", "export ALVIS_LOG_LEVEL=WARNING"]
-        for key, value in self.env_overrides.items():
-            exports.append(f"export {key}={shlex.quote(value)}")
-        return " && ".join(exports)
 
     def build_task_prompt(self, contract: TaskContract) -> str:
         constraints = "\n".join(f"- {item}" for item in contract.constraints) or "- None"
@@ -99,59 +79,16 @@ class CodexAdapter:
             "stdout": agent_dir / "pane.log",
             "stderr": agent_dir / "stderr.log",
             "inbox": agent_dir / "prompt_inbox.jsonl",
+            "prompt": agent_dir / "task_prompt.txt",
+            "last_message": agent_dir / "last_message.txt",
+            "schema_output": agent_dir / "task_output.json",
         }
 
     def reset_session_files(self, agent_id: str) -> dict[str, Path]:
         paths = self.session_paths(agent_id)
-        for key in ("heartbeat", "state", "stdout", "stderr", "inbox"):
+        for key in ("heartbeat", "state", "stdout", "stderr", "inbox", "prompt", "last_message", "schema_output"):
             paths[key].write_text("")
         return paths
-
-    def build_leader_console_command(self, team_id: str) -> str:
-        python_exec = shlex.quote(sys.executable)
-        code_root = shlex.quote(str(self.repo_root))
-        return (
-            f"cd {code_root} && {self._export_prefix()} && "
-            f"exec {python_exec} -m app.runtime.leader_console --team-id {shlex.quote(team_id)}"
-        )
-
-    def build_worker_dashboard_command(self, team_id: str) -> str:
-        python_exec = shlex.quote(sys.executable)
-        code_root = shlex.quote(str(self.repo_root))
-        return (
-            f"cd {code_root} && {self._export_prefix()} && "
-            f"exec {python_exec} -m app.runtime.worker_dashboard --team-id {shlex.quote(team_id)}"
-        )
-
-    def build_bootstrap_command(self, agent_id: str, cwd: str) -> str:
-        paths = self.session_paths(agent_id)
-        quoted_cwd = shlex.quote(cwd)
-        quoted_codex_command = shlex.quote(self.codex_command)
-        quoted_heartbeat = shlex.quote(str(paths["heartbeat"]))
-        quoted_stderr = shlex.quote(str(paths["stderr"]))
-        quoted_state = shlex.quote(str(paths["state"]))
-        return (
-            f"cd {quoted_cwd} && "
-            "export PYTHONUNBUFFERED=1 && "
-            "clear && "
-            "exec python3 -m app.runtime.codex_session_wrapper "
-            f"--cwd {quoted_cwd} "
-            f"--codex-command {quoted_codex_command} "
-            f"--heartbeat-file {quoted_heartbeat} "
-            f"--stdout-file {shlex.quote(str(paths['stdout']))} "
-            f"--stderr-file {quoted_stderr} "
-            f"--state-file {quoted_state}"
-        )
-
-    def bootstrap_session(self, agent_id: str, pane_id: str, cwd: str) -> dict[str, str]:
-        paths = self.session_paths(agent_id)
-        deadline = time.time() + 5
-        while time.time() < deadline:
-            state = self.read_session_state(agent_id)
-            if state["status"] in {"ready", "error", "exited"}:
-                break
-            time.sleep(0.1)
-        return {key: str(value) for key, value in paths.items()}
 
     def read_session_state(self, agent_id: str) -> dict:
         path = self.session_paths(agent_id)["state"]
@@ -163,14 +100,14 @@ class CodexAdapter:
             return {"status": "not_ready", "reason": "invalid_state_file"}
 
     def runtime_health(self, agent_id: str, pane_exists: bool) -> dict:
-        if not pane_exists:
-            return {"status": "missing_pane", "ready": False}
         state = self.read_session_state(agent_id)
         status = state.get("status", "not_ready")
         stderr_summary = self.stderr_summary(agent_id)
+        if not pane_exists and status in {"not_ready", "starting"}:
+            status = "missing_pane"
         return {
             "status": status,
-            "ready": status == "ready",
+            "ready": status in {"ready", "running", "exited"},
             "pid": state.get("pid"),
             "exit_code": state.get("exit_code"),
             "reason": state.get("reason"),
@@ -200,12 +137,3 @@ class CodexAdapter:
             "hint": "agent stderr 로그를 확인하세요.",
             "last_line": last_line,
         }
-
-    def queue_task_prompt(self, agent_id: str, contract: TaskContract) -> str:
-        prompt = self.build_task_prompt(contract)
-        inbox_path = self.session_paths(agent_id)["inbox"]
-        inbox_path.parent.mkdir(parents=True, exist_ok=True)
-        with inbox_path.open("a") as handle:
-            handle.write(json.dumps({"task_id": contract.task_id, "prompt": prompt}) + "\n")
-        self.log.info("codex.dispatch", agent_id=agent_id, task_id=contract.task_id, inbox=str(inbox_path))
-        return prompt

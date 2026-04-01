@@ -19,7 +19,6 @@ from app.cli_formatters import (
     format_run_state,
     format_start,
     format_status,
-    format_team_start,
 )
 from app.config import get_settings
 from app.daemon_client import DaemonClient, DaemonHttpError, DaemonUnavailableError
@@ -113,10 +112,10 @@ def doctor(json_output: bool = typer.Option(False, "--json")):
         "workspace_root": str(_workspace_root()),
         "app_home": str(settings.app_home),
         "data_dir": str(settings.data_dir),
+        "db_path": str(settings.db_path),
+        "runtime_dir": str(settings.runtime_dir),
         "daemon": daemon,
-        "shell_tmux_path": settings.tmux_path,
         "shell_codex_command": settings.codex_command,
-        "shell_tmux_available": subprocess.run(["which", "tmux"], check=False, capture_output=True, text=True).returncode == 0,
         "shell_codex_available": subprocess.run(["which", "codex"], check=False, capture_output=True, text=True).returncode == 0,
     }
     daemon_version = payload["daemon"].get("version")
@@ -131,15 +130,18 @@ def doctor(json_output: bool = typer.Option(False, "--json")):
                 f"workspace: {data['workspace_root']}",
                 f"app_home: {data['app_home']}",
                 f"data_dir: {data['data_dir']}",
+                f"db_path: {data['db_path']}",
+                f"runtime_dir: {data['runtime_dir']}",
                 f"daemon: {data['daemon'].get('status', 'unknown')}",
-                f"shell tmux_path: {data.get('shell_tmux_path') or '-'}",
                 f"shell codex_command: {data.get('shell_codex_command') or '-'}",
-                f"shell tmux: {'ok' if data['shell_tmux_available'] else 'missing'}",
                 f"shell codex: {'ok' if data['shell_codex_available'] else 'missing'}",
                 f"daemon version: {data['daemon'].get('version') or '-'}",
-                f"daemon tmux_path: {data['daemon'].get('daemon_tmux_path') or '-'}",
                 f"daemon codex_command: {data['daemon'].get('daemon_codex_command') or '-'}",
-                f"daemon tmux: {'ok' if data['daemon'].get('daemon_tmux_available') else 'missing'}",
+                f"daemon workspace: {data['daemon'].get('daemon_workspace_root') or '-'}",
+                f"daemon data_dir: {data['daemon'].get('daemon_data_dir') or '-'}",
+                f"daemon db_path: {data['daemon'].get('daemon_db_path') or '-'}",
+                f"daemon runtime_dir: {data['daemon'].get('daemon_runtime_dir') or '-'}",
+                f"workspace teams: {data['daemon'].get('daemon_team_count') if data['daemon'].get('daemon_team_count') is not None else '-'}",
                 (
                     "daemon version mismatch: run `alvis daemon restart` or `alvis upgrade` again"
                     if data.get("daemon_version_matches") is False

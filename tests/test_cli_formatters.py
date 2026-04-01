@@ -1,4 +1,4 @@
-from app.cli_formatters import format_clean, format_logs, format_recover, format_start, format_status, format_team_create, format_team_start
+from app.cli_formatters import format_clean, format_logs, format_recover, format_start, format_status
 
 
 def test_format_status_renders_core_sections():
@@ -20,8 +20,19 @@ def test_format_status_renders_core_sections():
                         "error_summary": "Codex가 전역 npm 업데이트를 시도했지만 권한 오류(EACCES)로 종료되었습니다.",
                         "error_hint": "터미널에서 `codex`를 직접 실행해 업데이트 프롬프트를 넘기거나 권한 문제를 해결한 뒤 다시 시도하세요.",
                     },
+                    "pid": 123,
+                    "exit_code": 1,
                 }
             ],
+            "execution_summary": {
+                "dispatching_tasks": 1,
+                "waiting_interactions": 0,
+                "blocked_tasks": 0,
+                "run_age_seconds": 1.2,
+                "latest_task_update_age_seconds": 0.5,
+                "oldest_pending_interaction_age_seconds": None,
+                "last_important_event": "Task assigned",
+            },
             "latest_run": {
                 "run_id": "run-1",
                 "status": "running",
@@ -49,10 +60,11 @@ def test_format_status_renders_core_sections():
             "final_output_ready": True,
             "redo_tasks": [],
             "runtime_issues": {
-                "missing_panes": [],
+                "missing_runtime_state": [],
                 "stale_heartbeat": [],
-                "session_not_ready": [],
-                "session_exited": [],
+                "runtime_not_ready": [],
+                "exited_runners": [],
+                "uncollected_outputs": [],
                 "orphaned_tasks": [],
                 "dangling_runs": [],
             },
@@ -61,6 +73,8 @@ def test_format_status_renders_core_sections():
     assert "팀: demo" in text
     assert "최근 실행: run-1" in text
     assert "체크포인트: next=wait_for_updates thread=run-1" in text
+    assert "실행 요약:" in text
+    assert "run_age=1.2s" in text
     assert "에이전트:" in text
     assert "자동 handoff:" in text
     assert "validated output" in text
@@ -97,27 +111,6 @@ def test_format_cleanup_renders_counts():
     assert "skipped_teams: 1" in text
 
 
-def test_format_team_start_renders_session_issues():
-    text = format_team_start(
-        {
-            "team_id": "demo",
-            "session_name": "alvis-demo",
-            "panes": ["%1", "%2"],
-            "session_issues": [
-                {
-                    "agent_id": "demo-worker-1",
-                    "runtime_status": "exited",
-                    "error_summary": "Codex가 전역 npm 업데이트를 시도했지만 권한 오류(EACCES)로 종료되었습니다.",
-                    "error_hint": "터미널에서 `codex`를 직접 실행해 업데이트 프롬프트를 넘기거나 권한 문제를 해결한 뒤 다시 시도하세요.",
-                }
-            ],
-        }
-    )
-    assert "세션 경고:" in text
-    assert "demo-worker-1" in text
-    assert "권한 오류(EACCES)" in text
-
-
 def test_format_status_renders_handoff_details():
     text = format_status(
         {
@@ -147,10 +140,11 @@ def test_format_status_renders_handoff_details():
                 }
             ],
             "runtime_issues": {
-                "missing_panes": [],
+                "missing_runtime_state": [],
                 "stale_heartbeat": [],
-                "session_not_ready": [],
-                "session_exited": [],
+                "runtime_not_ready": [],
+                "exited_runners": [],
+                "uncollected_outputs": [],
                 "orphaned_tasks": [],
                 "dangling_runs": [],
             },
@@ -159,27 +153,6 @@ def test_format_status_renders_handoff_details():
     assert "parent=task-1" in text
     assert "role=checker" in text
     assert "재작업 작업:" in text
-
-
-def test_format_team_create_renders_workers_and_start_result():
-    text = format_team_create(
-        {
-            "team_id": "demo",
-            "workers": [
-                {"agent_id": "demo-worker-1", "role": "implementer", "role_alias": "backend"},
-                {"agent_id": "demo-worker-2", "role": "reviewer", "role_alias": "test"},
-            ],
-            "start_result": {
-                "team_id": "demo",
-                "session_name": "alvis-demo",
-                "panes": ["%1", "%2", "%3"],
-                "session_issues": [],
-            },
-        }
-    )
-    assert "팀 생성됨: demo" in text
-    assert "demo-worker-1 role=implementer alias=backend" in text
-    assert "팀 시작됨: demo" in text
 
 
 def test_format_start_renders_existing_session_attach():
@@ -196,10 +169,11 @@ def test_format_start_renders_existing_session_attach():
 def test_format_recover_renders_session_errors():
     text = format_recover(
         {
-            "missing_panes": [],
+            "missing_runtime_state": [],
             "stale_heartbeat": [],
-            "session_not_ready": [],
-            "session_exited": ["demo-worker-1"],
+            "runtime_not_ready": [],
+            "exited_runners": ["demo-worker-1"],
+            "uncollected_outputs": [],
             "orphaned_tasks": [],
             "orphaned_reviews": [],
             "dangling_runs": [],
@@ -217,4 +191,5 @@ def test_format_recover_renders_session_errors():
         }
     )
     assert "감지된 세션 오류:" in text
+    assert "exited_runners: 1" in text
     assert "demo-worker-1" in text

@@ -28,7 +28,7 @@ def test_perform_upgrade_reports_daemon_version_mismatch(monkeypatch, tmp_path):
     monkeypatch.setattr(
         upgrade_module,
         "_fetch_release",
-        lambda settings, version=None: {"tag_name": "v0.2.1", "tarball_url": "https://example.com/release.tar.gz"},
+        lambda settings, version=None: {"tag_name": "v0.2.2", "tarball_url": "https://example.com/release.tar.gz"},
     )
     monkeypatch.setattr(upgrade_module, "_download", lambda url, target: target.write_bytes(b"fake"))
 
@@ -42,7 +42,7 @@ def test_perform_upgrade_reports_daemon_version_mismatch(monkeypatch, tmp_path):
         def extractall(self, target):
             extracted = Path(target) / "repo"
             extracted.mkdir(parents=True, exist_ok=True)
-            (extracted / "pyproject.toml").write_text("[project]\nname='alvis'\nversion='0.2.1'\n")
+            (extracted / "pyproject.toml").write_text("[project]\nname='alvis'\nversion='0.2.2'\n")
 
     monkeypatch.setattr(upgrade_module.tarfile, "open", lambda *args, **kwargs: FakeTarFile())
     monkeypatch.setattr(upgrade_module.shutil, "copytree", lambda src, dst: Path(dst).mkdir(parents=True, exist_ok=True))

@@ -47,6 +47,8 @@ class AlvisRunState(TypedDict, total=False):
     review_requests: list[ReviewState]
     handoffs: list[dict]
     pending_interactions: list[InteractionState]
+    leader_waiting: bool
+    waiting_for_leader_summary: str | None
     final_output_candidate: dict | None
     final_output_ready: bool
     final_response: str | None
