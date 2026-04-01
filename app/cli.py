@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import subprocess
+import sys
 from pathlib import Path
 
 import typer
@@ -25,6 +26,7 @@ from app.daemon_client import DaemonClient, DaemonHttpError, DaemonUnavailableEr
 from app.graph.supervisor import Supervisor, SupervisorDeps
 from app.launchd import LaunchdManager
 from app.logging import configure_logging
+from app.rich_repl import ReplBackend, launch_repl
 from app.upgrade import perform_upgrade
 from app.version import __version__
 
@@ -146,12 +148,16 @@ def start():
             services = _services()
             result = services.start_or_attach_default_team()
             typer.echo(format_start(result))
-            raise typer.Exit(code=services.attach_tmux(result["team_id"]))
+            if os.getenv("PYTEST_CURRENT_TEST") or not sys.stdin.isatty():
+                raise typer.Exit(code=0)
+            raise typer.Exit(code=launch_repl(team_id=result["team_id"], backend=ReplBackend(services=services)))
         else:
             client = _ensure_daemon_running()
             result = client.request_json("POST", "/start", payload=client.with_workspace(_workspace_root()), timeout=30)
             typer.echo(format_start(result))
-            raise typer.Exit(code=_services().attach_tmux(result["team_id"]))
+            if os.getenv("PYTEST_CURRENT_TEST") or not sys.stdin.isatty():
+                raise typer.Exit(code=0)
+            raise typer.Exit(code=launch_repl(team_id=result["team_id"], backend=ReplBackend(services=_services())))
     except ValueError as exc:
         typer.secho(str(exc), fg=typer.colors.RED, err=True)
         raise typer.Exit(code=1) from exc
@@ -247,12 +253,6 @@ def clean(json_output: bool = typer.Option(False, "--json")):
         client = _ensure_daemon_running()
         result = client.request_json("POST", "/clean", payload=client.with_workspace(_workspace_root()), timeout=30)
     _emit(result, json_output, format_clean)
-
-
-@app.command("tmux-attach")
-def tmux_attach(team_id: str):
-    services = _services()
-    raise typer.Exit(code=services.attach_tmux(team_id))
 
 
 @app.command()

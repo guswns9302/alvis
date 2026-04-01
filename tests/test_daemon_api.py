@@ -30,7 +30,7 @@ class FakeServices:
         }
 
     def start_or_attach_default_team(self) -> dict:
-        return {"action": "created", "team_id": "team-demo", "session_name": "alvis-team-demo", "start_result": {"all_ready": True, "session_name": "alvis-team-demo"}}
+        return {"action": "created", "team_id": "team-demo", "session_name": None}
 
     def clean_workspace_teams(self) -> dict:
         return {"removed_teams": [], "skipped_teams": [], "removed_count": 0, "skipped_count": 0}

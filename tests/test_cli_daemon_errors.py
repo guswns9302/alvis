@@ -44,9 +44,7 @@ class FakeDaemonClient:
             }
         return {
             "team_id": "team-demo",
-            "session_name": "alvis-demo",
             "action": "created",
-            "start_result": {"all_ready": True, "session_name": "alvis-demo"},
         }
 
 
@@ -86,7 +84,6 @@ def test_start_surfaces_conflict_error(monkeypatch, tmp_path):
     monkeypatch.setattr(cli_module, "_workspace_root", lambda: tmp_path)
     monkeypatch.setattr(cli_module, "_direct_mode", lambda: False)
     monkeypatch.setattr(cli_module, "_ensure_daemon_running", lambda: FakeDaemonClient(error=DaemonHttpError(409, {"error_code": "team_exists", "detail": "team demo already exists"})))
-    monkeypatch.setattr(cli_module, "_services", lambda workspace_root=None: SimpleNamespace(attach_tmux=lambda team_id: 0))
 
     result = runner.invoke(cli_module.app, ["start"])
 
@@ -99,7 +96,7 @@ def test_start_uses_longer_daemon_timeout(monkeypatch, tmp_path):
     monkeypatch.setattr(cli_module, "_workspace_root", lambda: tmp_path)
     monkeypatch.setattr(cli_module, "_direct_mode", lambda: False)
     monkeypatch.setattr(cli_module, "_ensure_daemon_running", lambda: client)
-    monkeypatch.setattr(cli_module, "_services", lambda workspace_root=None: SimpleNamespace(attach_tmux=lambda team_id: 0))
+    monkeypatch.setattr(cli_module, "_services", lambda workspace_root=None: SimpleNamespace())
 
     result = runner.invoke(cli_module.app, ["start"])
 

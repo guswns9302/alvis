@@ -52,8 +52,7 @@ def format_start(result: dict) -> str:
     if result.get("action") == "attached_existing":
         return "\n".join(
             [
-                f"기존 팀 세션 진입: {result['team_id']}",
-                f"세션: {result['session_name']}",
+                f"기존 팀 진입: {result['team_id']}",
             ]
         )
     start_result = {
@@ -63,9 +62,8 @@ def format_start(result: dict) -> str:
     }
     lines = [
         f"새 팀 시작: {result['team_id']}",
-        f"세션: {result.get('session_name') or start_result.get('session_name') or '없음'}",
     ]
-    if start_result:
+    if start_result.get("session_name"):
         lines.append(format_team_start(start_result))
     return "\n".join(lines)
 

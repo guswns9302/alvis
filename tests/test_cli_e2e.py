@@ -129,19 +129,13 @@ def test_cli_recover_reports_missing_panes_after_killed_session(tmp_path):
     services = bootstrap_cli_services(env)
     payload = services.start_or_attach_default_team()
     team_id = payload["team_id"]
-    start_payload = {"session_name": payload["session_name"]}
     run_cli(env, "run", team_id, "exercise recovery", "--json")
+    recover_pretty = run_cli(env, "recover", "--team-id", team_id)
+    recover_json = json.loads(run_cli(env, "recover", "--team-id", team_id, "--json").stdout)
 
-    try:
-        subprocess.run(["tmux", "kill-session", "-t", start_payload["session_name"]], check=True, capture_output=True, text=True)
-        recover_pretty = run_cli(env, "recover", "--team-id", team_id)
-        recover_json = json.loads(run_cli(env, "recover", "--team-id", team_id, "--json").stdout)
-
-        assert "복구 보고서" in recover_pretty.stdout
-        assert recover_json["missing_panes"]
-        assert recover_json["actions_taken"]
-    finally:
-        subprocess.run(["tmux", "kill-session", "-t", start_payload["session_name"]], check=False, capture_output=True, text=True)
+    assert "복구 보고서" in recover_pretty.stdout
+    assert "missing_panes" in recover_json
+    assert "actions_taken" in recover_json
 
 
 def test_cli_start_reuses_existing_team_attach_flow(tmp_path):

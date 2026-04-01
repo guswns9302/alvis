@@ -43,26 +43,8 @@ class TaskContract(BaseModel):
     constraints: list[str] = Field(default_factory=list)
     expected_output: list[str] = Field(default_factory=list)
     completion_rule: str = (
-        "Finish by printing a structured result block using this exact format:\n"
-        "ALVIS_RESULT_START\n"
-        "STATUS: <done|need_input|blocked|needs_review>\n"
-        "SUMMARY: <one concise summary line>\n"
-        "QUESTION_FOR_LEADER:\n"
-        "- <question that requires leader guidance>\n"
-        "REQUESTED_CONTEXT:\n"
-        "- <missing context or dependency>\n"
-        "FOLLOWUP_SUGGESTION:\n"
-        "- <suggested next instruction>\n"
-        "DEPENDENCY_NOTE:\n"
-        "- <cross-agent dependency note>\n"
-        "CHANGED_FILES:\n"
-        "- <path or file summary>\n"
-        "TEST_RESULTS:\n"
-        "- <test result>\n"
-        "RISK_FLAGS:\n"
-        "- <risk or blocker>\n"
-        "ALVIS_RESULT_END\n"
-        "If a section has no items, leave it empty but keep the section header."
+        "Finish by returning a single final response that matches the structured output schema provided by the runner. "
+        "Do not include extra narration outside the schema fields."
     )
     context: dict[str, Any] = Field(default_factory=dict)
 

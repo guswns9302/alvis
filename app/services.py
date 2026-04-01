@@ -576,18 +576,35 @@ class AlvisServices:
             teams.append(
                 {
                     "team_id": team.team_id,
-                    "session_name": team.session_name or self.tmux.team_session_name(team.team_id),
-                    "session_alive": bool(team.session_name) and self.tmux._session_exists(team.session_name),  # type: ignore[attr-defined]
+                    "session_name": team.session_name,
+                    "created_at": team.created_at.isoformat() if team.created_at else None,
                 }
             )
-        teams.sort(key=lambda item: item["team_id"])
+        teams.sort(key=lambda item: item["created_at"] or "")
         return teams
 
     def find_attachable_team(self) -> dict | None:
-        teams = [team for team in self.list_workspace_teams() if team["session_alive"]]
+        teams = self.list_workspace_teams()
         if not teams:
             return None
         return teams[-1]
+
+    def _prepare_team_runtime(self, team_id: str) -> None:
+        with session_scope(self.session_factory) as session:
+            repo = Repository(session)
+            agents = repo.list_agents(team_id)
+            for agent in agents:
+                shared_root, _ = self.worktrees.ensure_worktree(team_id, agent.agent_id)
+                repo.update_agent(
+                    agent,
+                    cwd=str(shared_root),
+                    git_branch=None,
+                    git_worktree_path=None,
+                    tmux_session=None,
+                    tmux_window=None,
+                    tmux_pane=None,
+                    status=AgentStatus.IDLE.value,
+                )
 
     def start_or_attach_default_team(self) -> dict:
         attachable = self.find_attachable_team()
@@ -598,12 +615,12 @@ class AlvisServices:
                 "session_name": attachable["session_name"],
             }
         team_id = f"team-{uuid.uuid4().hex[:8]}"
-        provisioned = self.provision_team(team_id, "implementer:executor", "reviewer:reviewer")
+        team = self.create_team(team_id, "implementer:executor", "reviewer:reviewer")
+        self._prepare_team_runtime(team_id)
         return {
             "action": "created",
-            "team_id": provisioned["team"].team_id,
-            "session_name": provisioned["start_result"]["session_name"],
-            "start_result": provisioned["start_result"],
+            "team_id": team.team_id,
+            "session_name": None,
         }
 
     def clean_workspace_teams(self) -> dict:

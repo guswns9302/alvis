@@ -187,12 +187,10 @@ def test_format_start_renders_existing_session_attach():
         {
             "action": "attached_existing",
             "team_id": "demo",
-            "session_name": "alvis-demo",
         }
     )
 
-    assert "기존 팀 세션 진입: demo" in text
-    assert "세션: alvis-demo" in text
+    assert "기존 팀 진입: demo" in text
 
 
 def test_format_recover_renders_session_errors():
