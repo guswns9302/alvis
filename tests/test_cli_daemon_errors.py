@@ -21,7 +21,7 @@ class FakeDaemonClient:
     def health(self, workspace_root=None):
         return {
             "status": "ok",
-            "version": "0.2.0",
+            "version": cli_module.__version__,
             "daemon_codex_command": "/usr/local/bin/codex",
             "daemon_workspace_root": str(workspace_root or "/tmp/workspace"),
             "daemon_data_dir": "/tmp/data",
@@ -77,9 +77,10 @@ def test_doctor_prints_daemon_runtime_details(monkeypatch, tmp_path):
 
     assert result.exit_code == 0
     assert "daemon codex_command: /usr/local/bin/codex" in result.output
-    assert "daemon version: 0.2.0" in result.output
+    assert f"daemon version: {cli_module.__version__}" in result.output
     assert "daemon db_path: /tmp/data/alvis.db" in result.output
     assert "workspace teams: 1" in result.output
+    assert "recommended action: run `alvis start`" in result.output
 
 
 def test_start_surfaces_conflict_error(monkeypatch, tmp_path):
@@ -141,3 +142,4 @@ def test_doctor_warns_when_daemon_version_mismatches(monkeypatch, tmp_path):
 
     assert result.exit_code == 0
     assert "daemon version mismatch" in result.output
+    assert "recommended action: run `alvis daemon restart` or `alvis upgrade` again" in result.output

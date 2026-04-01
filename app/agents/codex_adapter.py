@@ -10,6 +10,14 @@ from app.schemas import TaskContract
 class CodexAdapter:
     STDERR_PATTERNS = (
         (
+            re.compile(r"not inside a trusted directory", re.IGNORECASE),
+            "Codex가 현재 작업 디렉터리를 신뢰된 작업 디렉터리로 인식하지 못했습니다.",
+        ),
+        (
+            re.compile(r"(?:unknown|unrecognized|unexpected) (?:option|argument)", re.IGNORECASE),
+            "Codex 실행 옵션이 현재 설치된 Codex 버전과 맞지 않아 실행에 실패했습니다.",
+        ),
+        (
             re.compile(r"npm error code EACCES", re.IGNORECASE),
             "Codex가 전역 npm 업데이트를 시도했지만 권한 오류(EACCES)로 종료되었습니다.",
         ),

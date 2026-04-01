@@ -5,8 +5,8 @@ import threading
 import time
 from typing import Any
 
-from rich.console import Console, RenderableType
-from rich.panel import Panel
+from rich.console import Console, Group, RenderableType
+from rich.padding import Padding
 from rich.table import Table
 from rich.text import Text
 
@@ -43,6 +43,16 @@ STATUS_STYLES = {
     "blocked": "red",
     "failed": "red",
     "done": "blue",
+}
+
+MESSAGE_TONES = {
+    "system": ("bold #7f8c8d", "dim #aeb6bf"),
+    "worker": ("bold #95a5a6", "dim #c0c6cc"),
+    "warning": ("bold yellow", "yellow"),
+    "error": ("bold red", "red"),
+    "user": ("bold bright_cyan", "bright_cyan"),
+    "output": ("bold bright_cyan", "bright_white"),
+    "status": ("bold cyan", "cyan"),
 }
 
 
@@ -82,7 +92,7 @@ def _worker_task_summary(agent: dict[str, Any], status: dict[str, Any]) -> str:
     )
 
 
-def render_worker_strip(status: dict[str, Any]) -> Panel:
+def render_worker_strip(status: dict[str, Any]) -> RenderableType:
     table = Table.grid(expand=True)
     table.add_column(ratio=2)
     table.add_column(ratio=1)
@@ -98,7 +108,7 @@ def render_worker_strip(status: dict[str, Any]) -> Panel:
             Text(worker_status, style=_status_style(worker_status)),
             Text(_worker_task_summary(agent, status), style="white"),
         )
-    return Panel(table, title="Workers", border_style="green")
+    return Group(Text("Workers", style="bold green"), table)
 
 
 def render_session_header(team_id: str, status: dict[str, Any]) -> RenderableType:
@@ -113,11 +123,23 @@ def render_session_header(team_id: str, status: dict[str, Any]) -> RenderableTyp
     header.add_row("Run", str(run_id))
     header.add_row("State", Text(str(run_status), style=_status_style(str(run_status))))
     header.add_row("Request", request)
-    return Panel(header, title=f"Alvis · {team_id}", border_style="bright_blue")
+    return Group(Text(f"Alvis · {team_id}", style="bold bright_blue"), header)
 
 
-def render_message(role: str, body: RenderableType, *, border_style: str) -> Panel:
-    return Panel(body, title=role, title_align="left", border_style=border_style)
+def _text_body(body: RenderableType, *, tone: str) -> RenderableType:
+    if isinstance(body, Text):
+        body = body.copy()
+        body.stylize(MESSAGE_TONES[tone][1])
+        return body
+    return body
+
+
+def render_message(role: str, body: RenderableType, *, tone: str) -> RenderableType:
+    header_style, _ = MESSAGE_TONES[tone]
+    return Group(
+        Text(role, style=header_style),
+        Padding(_text_body(body, tone=tone), (0, 0, 0, 2)),
+    )
 
 
 def _event_summary(event: dict[str, Any]) -> str:
@@ -168,24 +190,31 @@ def _worker_voice_message(event: dict[str, Any], status: dict[str, Any]) -> str:
         parse_status = payload.get("output_parse_status")
         if parse_status in PARSE_STATUS_MESSAGES:
             return PARSE_STATUS_MESSAGES[str(parse_status)]
+        if payload.get("status_signal") == "blocked" and summary:
+            return summary
         if payload.get("status_signal") == "blocked":
             return f"작업이 막혔습니다: {summary}"
         return summary
     if event_type == "leader.output.ready":
         return "최종 응답 초안을 전달했습니다."
+    if event_type == "interaction.created":
+        if payload.get("interaction_kind") == "report_blocker":
+            return "리더 입력이 필요합니다."
+        return summary
     if event_type == "error.raised":
-        detail = payload.get("reason") or payload.get("detail")
+        detail = payload.get("error_summary") or payload.get("detail") or payload.get("reason")
+        hint = payload.get("error_hint")
         exit_code = payload.get("exit_code")
-        bits = [summary]
-        if detail:
-            bits.append(str(detail))
+        bits = [str(detail or summary)]
         if exit_code not in (None, ""):
             bits.append(f"exit={exit_code}")
+        if hint:
+            bits.append(str(hint))
         return " | ".join(bits)
     return summary
 
 
-def render_event_message(event: dict[str, Any], status: dict[str, Any]) -> Panel:
+def render_event_message(event: dict[str, Any], status: dict[str, Any]) -> RenderableType:
     payload = event.get("payload") or {}
     detail = payload.get("message") or payload.get("detail")
     body = _worker_voice_message(event, status)
@@ -195,17 +224,19 @@ def render_event_message(event: dict[str, Any], status: dict[str, Any]) -> Panel
         body = f"{body}\n{detail}"
     role = _event_role(event, status)
     event_type = str(event.get("event_type") or "")
-    border = "yellow"
+    tone = "worker"
     if event_type == "error.raised":
-        border = "red"
+        tone = "error"
+    elif event_type == "interaction.created":
+        tone = "warning"
     elif event_type == "leader.output.ready":
-        border = "magenta"
+        tone = "output"
     elif role.lower() == "system":
-        border = "blue"
-    return render_message(role, Text(body), border_style=border)
+        tone = "system"
+    return render_message(role, Text(body), tone=tone)
 
 
-def render_status_snapshot(status: dict[str, Any]) -> Panel:
+def render_status_snapshot(status: dict[str, Any]) -> RenderableType:
     latest_run = status.get("latest_run") or {}
     lines = [
         f"run={latest_run.get('run_id') or '-'}",
@@ -215,13 +246,13 @@ def render_status_snapshot(status: dict[str, Any]) -> Panel:
     candidate = status.get("final_output_candidate") or {}
     if candidate.get("summary"):
         lines.append(f"final={candidate['summary']}")
-    return render_message("Status", Text("\n".join(lines)), border_style="cyan")
+    return render_message("Status", Text("\n".join(lines)), tone="status")
 
 
-def render_logs_snapshot(events: list[dict[str, Any]], status: dict[str, Any]) -> Panel:
+def render_logs_snapshot(events: list[dict[str, Any]], status: dict[str, Any]) -> RenderableType:
     visible = [event for event in events if should_render_event(event)][-8:]
     body = "\n".join(f"- {_event_role(event, status)}: {_worker_voice_message(event, status) or _event_summary(event)}" for event in visible) or "No recent events."
-    return render_message("Logs", Text(body), border_style="cyan")
+    return render_message("Logs", Text(body), tone="system")
 
 
 @dataclass
@@ -326,7 +357,7 @@ def _sync_transcript(
         final_key = (run_id, str(final_response))
         if final_key not in shown_final_keys:
             shown_final_keys.add(final_key)
-            console.print(render_message("Alvis", Text(str(final_response)), border_style="magenta"))
+            console.print(render_message("Alvis", Text(str(final_response)), tone="output"))
 
 
 def _print_prompt_context(console: Console, *, team_id: str, status: dict[str, Any]) -> None:
@@ -335,7 +366,7 @@ def _print_prompt_context(console: Console, *, team_id: str, status: dict[str, A
     pending = status.get("pending_interactions") or []
     if pending:
         question = next((item.get("message") for item in pending if item.get("message")), "워커가 추가 입력을 기다리고 있습니다.")
-        console.print(render_message("Question", Text(str(question)), border_style="yellow"))
+        console.print(render_message("Question", Text(str(question)), tone="warning"))
     console.print(Text("/status  /logs  /clean  /quit  /shutdown", style="cyan"))
 
 
@@ -398,7 +429,7 @@ def _monitor_request(
         shown_final_keys=shown_final_keys,
     )
     if handle.error is not None:
-        console.print(render_message("System", Text(str(handle.error)), border_style="red"))
+        console.print(render_message("System", Text(str(handle.error)), tone="error"))
 
 
 def _pending_question(status: dict[str, Any]) -> str | None:
@@ -418,7 +449,7 @@ def launch_repl(*, team_id: str, backend: ReplBackend) -> int:
     events = backend.logs(team_id, run_id=run_id)
 
     console.print(render_session_header(team_id, status))
-    console.print(render_message("System", Text("세션이 준비되었습니다. 요청을 입력하면 결과가 아래로 계속 쌓입니다."), border_style="blue"))
+    console.print(render_message("System", Text("세션이 준비되었습니다. 요청을 입력하면 결과가 아래로 계속 쌓입니다."), tone="system"))
     _sync_transcript(
         console,
         status=status,
@@ -455,21 +486,21 @@ def launch_repl(*, team_id: str, backend: ReplBackend) -> int:
             console.print(render_logs_snapshot(events, status))
             continue
         if command == "/clean":
-            console.print(render_message("System", Text(str(backend.clean())), border_style="red"))
+            console.print(render_message("System", Text(str(backend.clean())), tone="error"))
             return 0
         if command == "/shutdown":
-            console.print(render_message("System", Text(str(backend.shutdown(team_id))), border_style="red"))
+            console.print(render_message("System", Text(str(backend.shutdown(team_id))), tone="error"))
             return 0
 
-        console.print(render_message("You", Text(command), border_style="bright_blue"))
+        console.print(render_message("You", Text(command), tone="user"))
         pending_question = _pending_question(status)
         if pending_question:
             result = backend.answer_interaction(team_id, command)
             run_id = result["run_id"]
-            console.print(render_message("System", Text("질문에 답변했습니다. 후속 작업을 재개합니다."), border_style="blue"))
+            console.print(render_message("System", Text("질문에 답변했습니다. 후속 작업을 재개합니다."), tone="system"))
             handle = _start_background_action(lambda: backend.resume_run(run_id))
         else:
-            console.print(render_message("System", Text("요청을 처리 중입니다. 워커 진행 상황을 아래에 계속 표시합니다."), border_style="blue"))
+            console.print(render_message("System", Text("요청을 처리 중입니다. 워커 진행 상황을 아래에 계속 표시합니다."), tone="system"))
             handle = _start_background_action(lambda: backend.run_request(team_id, command))
         _monitor_request(
             console,

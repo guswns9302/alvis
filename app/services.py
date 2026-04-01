@@ -1194,6 +1194,24 @@ class AlvisServices:
             for spec in specs
         ]
 
+    def _background_failure_details(self, agent_id: str, *, exit_code: int | None, stderr_text: str) -> dict[str, str | int | None]:
+        stderr_summary = self.codex.stderr_summary(agent_id)
+        summary = str(
+            stderr_summary.get("summary")
+            or (stderr_text.splitlines()[-1].strip() if stderr_text.strip() else "")
+            or f"Codex 실행이 exit code {exit_code}로 종료되었습니다."
+        ).strip()
+        hint = str(stderr_summary.get("hint") or "").strip() or None
+        last_line = str(stderr_summary.get("last_line") or "").strip() or None
+        detail = last_line or (stderr_text.splitlines()[-1].strip() if stderr_text.strip() else None)
+        return {
+            "summary": summary,
+            "hint": hint,
+            "last_line": last_line,
+            "detail": detail,
+            "exit_code": exit_code,
+        }
+
     def refresh_agent_runtime(self, agent_id: str) -> AgentOutput | None:
         agent = self.get_agent(agent_id)
         paths = self.codex.session_paths(agent_id)
@@ -1239,14 +1257,22 @@ class AlvisServices:
                 )
             else:
                 stderr_text = paths["stderr"].read_text(encoding="utf-8", errors="ignore").strip() if paths["stderr"].exists() else ""
+                failure = self._background_failure_details(agent_id, exit_code=exit_code, stderr_text=stderr_text)
+                risk_flags = []
+                if failure["detail"]:
+                    risk_flags.append(str(failure["detail"]))
+                elif stderr_text:
+                    risk_flags.append(stderr_text)
+                if failure["hint"]:
+                    risk_flags.append(str(failure["hint"]))
                 output = AgentOutput(
                     task_id=task_id,
                     agent_id=agent_id,
                     kind="final",
-                    summary=f"Inline task execution failed with exit code {exit_code}.",
+                    summary=str(failure["summary"]),
                     status_signal="blocked",
-                    output_parse_status=output.output_parse_status,
-                    risk_flags=[stderr_text or "background execution failed"],
+                    output_parse_status=None,
+                    risk_flags=risk_flags or ["background execution failed"],
                 )
         self.append_event(
             team_id=agent.team_id,
@@ -1280,6 +1306,11 @@ class AlvisServices:
                 task_id=task_id,
             )
         if exit_code not in (None, 0) or output.status_signal == "blocked":
+            failure = self._background_failure_details(
+                agent_id,
+                exit_code=exit_code,
+                stderr_text=paths["stderr"].read_text(encoding="utf-8", errors="ignore").strip() if paths["stderr"].exists() else "",
+            )
             self.append_event(
                 team_id=agent.team_id,
                 run_id=task.run_id,
@@ -1290,6 +1321,9 @@ class AlvisServices:
                     "Task execution via background runner needs attention",
                     exit_code=exit_code,
                     reason=state.get("reason") or "background_exec",
+                    error_summary=failure["summary"],
+                    error_hint=failure["hint"],
+                    detail=failure["detail"],
                 ),
             )
         return output

@@ -260,6 +260,43 @@ def test_recover_collects_uncollected_exited_output(tmp_path):
     assert any(event.event_type == EventType.AGENT_OUTPUT_FINAL.value and event.task_id == task.task_id for event in events)
 
 
+def test_refresh_agent_runtime_surfaces_background_failure_reason(tmp_path):
+    services = create_services(tmp_path)
+    team_id = f"runtime-failure-{uuid4().hex[:6]}"
+    agent_id = f"{team_id}-worker-1"
+    services.create_team(team_id, "implementer:builder", "reviewer:checker")
+    run = services.create_run(team_id, "diagnose failure")
+    task = services.create_task(team_id, run.run_id, "Implement", "diagnose failure", target_role_alias="builder", owned_paths=["README.md"])
+    services.assign_task(task.task_id, agent_id)
+    paths = services.codex.session_paths(agent_id)
+    paths["stderr"].write_text("error: unknown option '--output-schema'\n", encoding="utf-8")
+    paths["state"].write_text(
+        json.dumps(
+            {
+                "status": "exited",
+                "pid": 1234,
+                "exit_code": 1,
+                "output_collected": False,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    output = services.refresh_agent_runtime(agent_id)
+    events = services.list_events(team_id=team_id, run_id=run.run_id)
+
+    assert output is not None
+    assert output.status_signal == "blocked"
+    assert output.output_parse_status is None
+    assert "Codex 실행 옵션이 현재 설치된 Codex 버전과 맞지 않아 실행에 실패했습니다." == output.summary
+    assert any("다시 시도하세요" in item for item in output.risk_flags)
+    assert any(
+        event.event_type == EventType.ERROR_RAISED.value
+        and event.payload.get("error_summary") == "Codex 실행 옵션이 현재 설치된 Codex 버전과 맞지 않아 실행에 실패했습니다."
+        for event in events
+    )
+
+
 def test_codex_runtime_health_extracts_permission_error_summary(tmp_path):
     adapter = CodexAdapter(
         codex_command="codex",

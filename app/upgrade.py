@@ -94,7 +94,28 @@ def perform_upgrade(settings: Settings, version: str | None = None) -> dict:
     tarball_url = release["tarball_url"]
     current = read_install_metadata(settings).get("version", __version__)
     if current == tag:
-        return {"status": "noop", "current_version": current, "target_version": tag}
+        daemon_result = {
+            "daemon_restarted": False,
+            "daemon_version": None,
+            "daemon_version_matches_target": None,
+            "daemon_error": None,
+        }
+        if shutil.which("launchctl"):
+            daemon_result = _verify_daemon_version(settings, tag)
+            if not daemon_result["daemon_version_matches_target"]:
+                manager = LaunchdManager(settings)
+                manager.stop()
+                manager.start()
+                daemon_result = _verify_daemon_version(settings, tag)
+                if not daemon_result["daemon_version_matches_target"]:
+                    return {
+                        "status": "daemon_mismatch",
+                        "current_version": current,
+                        "target_version": tag,
+                        **daemon_result,
+                    }
+                daemon_result["daemon_restarted"] = True
+        return {"status": "noop", "current_version": current, "target_version": tag, **daemon_result}
 
     with tempfile.TemporaryDirectory() as temp_dir:
         temp_path = Path(temp_dir)

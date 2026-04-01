@@ -75,6 +75,8 @@ def test_format_status_renders_core_sections():
     assert "체크포인트: next=wait_for_updates thread=run-1" in text
     assert "실행 요약:" in text
     assert "run_age=1.2s" in text
+    assert "주요 장애 원인: demo-worker-1" in text
+    assert "권장 조치:" in text
     assert "에이전트:" in text
     assert "자동 handoff:" in text
     assert "validated output" in text
@@ -192,4 +194,6 @@ def test_format_recover_renders_session_errors():
     )
     assert "감지된 세션 오류:" in text
     assert "exited_runners: 1" in text
+    assert "자동 조치:" in text
+    assert "수동 확인 필요:" in text
     assert "demo-worker-1" in text

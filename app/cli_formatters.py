@@ -91,6 +91,20 @@ def format_status(data: dict) -> str:
                 event=execution_summary.get("last_important_event") or "-",
             )
         )
+    session_errors = [
+        {
+            "agent_id": agent["agent_id"],
+            "error_summary": agent.get("runtime_health", {}).get("error_summary"),
+            "error_hint": agent.get("runtime_health", {}).get("error_hint"),
+        }
+        for agent in data.get("agents", [])
+        if agent.get("runtime_health", {}).get("error_summary")
+    ]
+    if session_errors:
+        primary = session_errors[0]
+        lines.append(f"주요 장애 원인: {primary['agent_id']} -> {primary['error_summary']}")
+        if primary.get("error_hint"):
+            lines.append(f"권장 조치: {primary['error_hint']}")
 
     agents = data.get("agents", [])
     lines.append("에이전트:")
@@ -185,8 +199,7 @@ def format_status(data: dict) -> str:
                 runs=len(runtime.get("dangling_runs", [])),
             )
         )
-        session_errors = data.get("agents", [])
-        for agent in session_errors:
+        for agent in data.get("agents", []):
             runtime_health = agent.get("runtime_health", {})
             if runtime_health.get("error_summary"):
                 lines.append(f"  - {agent['agent_id']}: {runtime_health['error_summary']}")
@@ -263,6 +276,19 @@ def format_logs(events: list[dict]) -> str:
 
 
 def format_recover(data: dict) -> str:
+    auto_actions = len(
+        [
+            action
+            for action in data.get("actions_taken", [])
+            if str(action.get("type") or "").startswith(("collected_", "task_", "run_", "retry_"))
+        ]
+    )
+    manual_followups = (
+        len(data.get("missing_runtime_state", []))
+        + len(data.get("runtime_not_ready", []))
+        + len(data.get("scope_conflicts", []))
+        + len(data.get("session_errors", []))
+    )
     lines = [
         "복구 보고서",
         f"  - missing_runtime_state: {len(data.get('missing_runtime_state', []))}",
@@ -276,6 +302,8 @@ def format_recover(data: dict) -> str:
         f"  - reconciled_runs: {len(data.get('reconciled_runs', []))}",
         f"  - scope_conflicts: {len(data.get('scope_conflicts', []))}",
         f"  - cleanup_candidates: {len(data.get('cleanup_candidates', []))}",
+        f"  - 자동 조치: {auto_actions}",
+        f"  - 수동 확인 필요: {manual_followups}",
         "수행한 조치:",
     ]
     actions = data.get("actions_taken", [])

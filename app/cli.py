@@ -121,6 +121,15 @@ def doctor(json_output: bool = typer.Option(False, "--json")):
     daemon_version = payload["daemon"].get("version")
     daemon_version_matches = daemon_version == __version__ if daemon_version else None
     payload["daemon_version_matches"] = daemon_version_matches
+    if not payload["shell_codex_available"]:
+        next_action = "install codex and rerun `alvis doctor`"
+    elif daemon_version_matches is False:
+        next_action = "run `alvis daemon restart` or `alvis upgrade` again"
+    elif payload["daemon"].get("status") != "ok":
+        next_action = "run `alvis daemon restart` and verify daemon health"
+    else:
+        next_action = "run `alvis start`"
+    payload["recommended_action"] = next_action
     _emit(
         payload,
         json_output,
@@ -149,6 +158,7 @@ def doctor(json_output: bool = typer.Option(False, "--json")):
                     if data.get("daemon_version_matches") is True
                     else "daemon version match: unknown"
                 ),
+                f"recommended action: {data.get('recommended_action') or '-'}",
             ]
         ),
     )

@@ -59,6 +59,7 @@ def test_render_worker_strip_shows_compact_worker_state():
     assert "running" in output
     assert "파이썬과 자바 차이 조사" in output
     assert "reviewer" in output
+    assert "╭" not in output
 
 
 def test_render_event_message_uses_role_alias_and_summary():
@@ -75,6 +76,7 @@ def test_render_event_message_uses_role_alias_and_summary():
 
     assert "Executor" in output
     assert "Executor가 작업을 시작했습니다." in output
+    assert "│" not in output
 
 
 def test_worker_voice_message_formats_structured_output_event():
@@ -108,6 +110,27 @@ def test_worker_voice_message_formats_parse_failure_for_user():
     }
 
     assert rich_repl._worker_voice_message(event, status) == "구조화된 응답이 기대 계약과 맞지 않습니다."
+
+
+def test_worker_voice_message_formats_runtime_failure_with_hint():
+    status = _sample_status()
+    event = {
+        "event_id": "evt-4",
+        "event_type": "error.raised",
+        "agent_id": "team-demo-worker-1",
+        "task_id": "task-1",
+        "payload": {
+            "summary": "Task execution via background runner needs attention",
+            "error_summary": "Codex 실행 옵션이 현재 설치된 Codex 버전과 맞지 않아 실행에 실패했습니다.",
+            "error_hint": "Codex 버전을 확인한 뒤 다시 시도하세요.",
+            "exit_code": 1,
+        },
+    }
+
+    message = rich_repl._worker_voice_message(event, status)
+    assert "Codex 실행 옵션이 현재 설치된 Codex 버전과 맞지 않아 실행에 실패했습니다." in message
+    assert "exit=1" in message
+    assert "Codex 버전을 확인한 뒤 다시 시도하세요." in message
 
 
 def test_sync_transcript_emits_final_response_once():
@@ -198,3 +221,4 @@ def test_print_prompt_context_shows_pending_question():
     output = console.export_text()
 
     assert "어느 섹션부터 수정해야 하나요?" in output
+    assert "╭" not in output

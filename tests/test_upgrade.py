@@ -77,3 +77,32 @@ def test_perform_upgrade_reports_daemon_version_mismatch(monkeypatch, tmp_path):
     assert result["status"] == "daemon_mismatch"
     assert result["daemon_version"] == "v0.2.0"
     assert result["daemon_version_matches_target"] is False
+
+
+def test_perform_upgrade_noop_verifies_daemon_when_versions_match(monkeypatch, tmp_path):
+    settings = _settings(tmp_path)
+    settings.app_home.mkdir(parents=True, exist_ok=True)
+    (settings.app_home / "install.json").write_text('{"version": "v0.2.2"}')
+
+    monkeypatch.setattr(upgrade_module, "ensure_runtime_dirs", lambda settings: None)
+    monkeypatch.setattr(
+        upgrade_module,
+        "_fetch_release",
+        lambda settings, version=None: {"tag_name": "v0.2.2", "tarball_url": "https://example.com/release.tar.gz"},
+    )
+    monkeypatch.setattr(upgrade_module.shutil, "which", lambda cmd: "/bin/launchctl" if cmd == "launchctl" else None)
+
+    class FakeDaemonClient:
+        def __init__(self, settings):
+            self.settings = settings
+
+        def health(self, workspace_root=None):
+            return {"status": "ok", "version": "v0.2.2"}
+
+    monkeypatch.setattr(upgrade_module, "DaemonClient", FakeDaemonClient)
+
+    result = upgrade_module.perform_upgrade(settings)
+
+    assert result["status"] == "noop"
+    assert result["daemon_version"] == "v0.2.2"
+    assert result["daemon_version_matches_target"] is True
