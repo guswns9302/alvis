@@ -545,7 +545,12 @@ class Supervisor:
             changed_files = output.changed_files if output else []
             risk_flags = output.risk_flags if output else []
             status_signal = output.status_signal or "done"
-            parse_failed = output.output_parse_status in {"no_result_block", "invalid_result_block"}
+            parse_failed = output.output_parse_status in {
+                "no_result_block",
+                "invalid_result_block",
+                "schema_parse_failed",
+                "schema_contract_failed",
+            }
             if output and task.parent_task_id:
                 if parse_failed:
                     self.deps.services.update_task(task.task_id, status=TaskStatus.BLOCKED.value, result_summary=summary)
@@ -567,7 +572,7 @@ class Supervisor:
                         payload=event_payload(
                             "응답 파싱 실패",
                             parse_status=output.output_parse_status,
-                            summary=summary,
+                            task_summary=summary,
                         ),
                     )
                     continue
@@ -753,7 +758,7 @@ class Supervisor:
                         payload=event_payload(
                             "응답 파싱 실패",
                             parse_status=output.output_parse_status,
-                            summary=summary,
+                            task_summary=summary,
                         ),
                     )
                     continue

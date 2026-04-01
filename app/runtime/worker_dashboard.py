@@ -2,40 +2,18 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
 import select
 import subprocess
 import sys
-import time
 import traceback
 
 from app.bootstrap import bootstrap_services
-from app.runtime.ui_state import WORKER_LOG_EVENTS, compact_task_title, filtered_events, format_timeline_entry, signal_dot, status_signal, worker_agents
-
-
-HEADER_HEIGHT = 8
+from app.runtime.ui_state import WORKER_LOG_EVENTS, filtered_events, format_timeline_entry, worker_agents
 
 
 def _clear() -> None:
     sys.stdout.write("\x1b[2J\x1b[H")
     sys.stdout.flush()
-
-
-def _rewrite_header(lines: list[str], previous: list[str] | None = None) -> list[str]:
-    previous = previous or []
-    sys.stdout.write("\x1b[s")
-    for row in range(HEADER_HEIGHT):
-        text = lines[row] if row < len(lines) else ""
-        if row < len(previous) and previous[row] == text:
-            continue
-        sys.stdout.write(f"\x1b[{row + 1};1H")
-        sys.stdout.write("\x1b[2K")
-        sys.stdout.write(text)
-    sys.stdout.write(f"\x1b[{HEADER_HEIGHT};1H")
-    sys.stdout.write("\x1b[u")
-    sys.stdout.flush()
-    return list(lines[:HEADER_HEIGHT])
-
 
 def _spawn_worker_runtime(agent_id: str) -> subprocess.Popen[str]:
     services = bootstrap_services()
@@ -80,30 +58,6 @@ def _pump_inbox(agent_id: str, process: subprocess.Popen[str], offset: int) -> i
             process.stdin.write(payload["prompt"] + "\n")
             process.stdin.flush()
     return len(lines)
-
-
-def _header_lines(team_id: str, blink_on: bool) -> list[str]:
-    services = bootstrap_services()
-    status = services.status(team_id)
-    workers = worker_agents(status)
-    latest_run = status.get("latest_run") or {}
-    lines = [
-        f"Workers · {team_id}",
-        f"요청: {latest_run.get('request') or '-'}",
-        "상태:",
-    ]
-    for worker in workers:
-        dot = signal_dot(status_signal(worker), blink_on and status_signal(worker) == "active")
-        task_title = compact_task_title(status, worker)
-        runtime = worker.get("runtime_health", {}).get("status") or "-"
-        lines.append(
-            f"  {dot} {worker.get('role_alias') or worker['role']:<10} "
-            f"{worker['status']:<12} runtime={runtime:<10} task={task_title}"
-        )
-    lines.append("")
-    lines.append("로그:")
-    return lines[:HEADER_HEIGHT]
-
 
 def _coalesce_log_line(line: str, counts: dict[str, int]) -> str | None:
     if counts.get(line):
@@ -152,13 +106,10 @@ def main() -> int:
     inbox_offsets = {worker["agent_id"]: 0 for worker in workers}
     seen_event_ids: set[str] = set()
     repeated_lines: dict[str, int] = {}
-    blink_on = True
-    last_blink = time.monotonic()
-    pulse_seconds = services.settings.worker_signal_pulse_seconds
-    header_cache: list[str] = []
 
     _clear()
-    sys.stdout.write("\n" * (HEADER_HEIGHT - 1))
+    sys.stdout.write(f"Workers · {team_id}\n")
+    sys.stdout.write("로그:\n")
     sys.stdout.flush()
 
     try:
@@ -166,11 +117,6 @@ def main() -> int:
             try:
                 for agent_id, process in processes.items():
                     inbox_offsets[agent_id] = _pump_inbox(agent_id, process, inbox_offsets[agent_id])
-                now = time.monotonic()
-                if now - last_blink >= pulse_seconds:
-                    blink_on = not blink_on
-                    last_blink = now
-                header_cache = _rewrite_header(_header_lines(team_id, blink_on), header_cache)
                 _append_new_logs(team_id, seen_event_ids, repeated_lines)
             except ValueError as exc:  # pragma: no cover - runtime cleanup path
                 if "not found" in str(exc):

@@ -89,12 +89,14 @@ def test_leader_render_includes_worker_status_and_final_result(monkeypatch):
     assert "최종 정리" in rendered
 
 
-def test_worker_dashboard_header_includes_status_strip(monkeypatch):
+def test_worker_dashboard_is_log_only(monkeypatch):
     stub = StubServices()
     monkeypatch.setattr(worker_dashboard, "bootstrap_services", lambda: stub)
 
-    lines = worker_dashboard._header_lines("demo", True)
+    events = worker_dashboard.filtered_events(stub, "demo", worker_dashboard.WORKER_LOG_EVENTS)
 
-    assert lines[0] == "Workers · demo"
-    assert any("checker" in line and "runtime=ready" in line for line in lines)
-    assert any("analyst" in line and "idle" in line for line in lines)
+    assert [worker["role_alias"] for worker in worker_dashboard.worker_agents(stub.status("demo"))] == ["checker", "analyst"]
+    assert [worker_dashboard.format_timeline_entry(event, stub.status("demo")) for event in events] == [
+        "[1/checker] Task assigned",
+        "[1/checker] Leader output ready",
+    ]

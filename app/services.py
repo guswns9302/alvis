@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import shlex
 import subprocess
 import tempfile
@@ -587,19 +588,66 @@ class AlvisServices:
             return [*parts, "exec", "--color", "never", "-"]
         return parts
 
-    def _build_noninteractive_codex_invocation(self, output_path: Path | None = None) -> list[str]:
+    def _codex_output_schema(self) -> dict:
+        return {
+            "type": "object",
+            "properties": {
+                "status_signal": {"type": "string", "enum": sorted(OutputCollector.VALID_STATUS_SIGNALS)},
+                "summary": {"type": "string"},
+                "question_for_leader": {"type": "array", "items": {"type": "string"}},
+                "requested_context": {"type": "array", "items": {"type": "string"}},
+                "followup_suggestion": {"type": "array", "items": {"type": "string"}},
+                "dependency_note": {"type": "array", "items": {"type": "string"}},
+                "changed_files": {"type": "array", "items": {"type": "string"}},
+                "test_results": {"type": "array", "items": {"type": "string"}},
+                "risk_flags": {"type": "array", "items": {"type": "string"}},
+            },
+            "required": [
+                "status_signal",
+                "summary",
+                "question_for_leader",
+                "requested_context",
+                "followup_suggestion",
+                "dependency_note",
+                "changed_files",
+                "test_results",
+                "risk_flags",
+            ],
+            "additionalProperties": False,
+        }
+
+    def _build_noninteractive_codex_invocation(self, output_path: Path | None = None, schema_path: Path | None = None) -> list[str]:
         command = self._build_noninteractive_codex_command()
         executable = Path(command[0]).name
         if executable != "codex" or "exec" not in command[1:]:
             return command
-        if output_path is None or "--output-last-message" in command or "-o" in command:
+        if output_path is None:
             return command
-        return [*command[:-1], "--output-last-message", str(output_path), command[-1]]
+        invocation = list(command)
+        stdin_marker = invocation[-1] if invocation[-1] == "-" else None
+        if stdin_marker:
+            invocation = invocation[:-1]
+        if schema_path is not None and "--output-schema" not in invocation:
+            invocation.extend(["--output-schema", str(schema_path)])
+        if "--output-last-message" not in invocation and "-o" not in invocation:
+            invocation.extend(["-o", str(output_path)])
+        if stdin_marker:
+            invocation.append(stdin_marker)
+        return invocation
 
-    def _run_noninteractive_codex(self, prompt: str, cwd: str) -> tuple[subprocess.CompletedProcess[str], str | None]:
+    def _run_noninteractive_codex(self, prompt: str, cwd: str) -> tuple[subprocess.CompletedProcess[str], str | None, str | None]:
         with tempfile.TemporaryDirectory(prefix="alvis-codex-") as temp_dir:
             output_path = Path(temp_dir) / "last-message.txt"
-            command = self._build_noninteractive_codex_invocation(output_path)
+            schema_path = Path(temp_dir) / "alvis-output-schema.json"
+            schema_output_path = Path(temp_dir) / "alvis-output.json"
+            schema_output_text = None
+            command = self._build_noninteractive_codex_command()
+            executable = Path(command[0]).name if command else ""
+            if executable == "codex" and "exec" in command[1:]:
+                schema_path.write_text(json.dumps(self._codex_output_schema(), ensure_ascii=False))
+                command = self._build_noninteractive_codex_invocation(schema_output_path, schema_path)
+            else:
+                command = self._build_noninteractive_codex_invocation(output_path, None)
             result = subprocess.run(
                 command,
                 input=prompt + "\n",
@@ -608,16 +656,19 @@ class AlvisServices:
                 cwd=cwd,
                 check=False,
             )
+            if schema_output_path.exists():
+                schema_output_text = schema_output_path.read_text()
             final_message = output_path.read_text() if output_path.exists() else None
-            return result, final_message
+            return result, final_message, schema_output_text
 
     def _dispatch_task_inline(self, agent: AgentModel, contract: TaskContract, prompt: str, reason: str) -> DispatchResult:
-        result, final_message = self._run_noninteractive_codex(prompt, contract.cwd)
+        result, final_message, schema_output = self._run_noninteractive_codex(prompt, contract.cwd)
         output = self.output_collector.summarize_task_output(
             agent_id=agent.agent_id,
             task_id=contract.task_id,
             log_text=result.stdout,
             final_message_text=final_message,
+            schema_output_text=schema_output,
         )
         if output.kind == "delta":
             if result.returncode == 0:
@@ -625,6 +676,10 @@ class AlvisServices:
                 parse_reason = "Missing ALVIS structured result block."
                 if parse_status == OutputCollector.PARSE_INVALID_RESULT_BLOCK:
                     parse_reason = "Invalid ALVIS structured result block."
+                if parse_status == OutputCollector.PARSE_SCHEMA_PARSE_FAILED:
+                    parse_reason = "Structured Codex output could not be parsed as JSON."
+                if parse_status == OutputCollector.PARSE_SCHEMA_CONTRACT_FAILED:
+                    parse_reason = "Structured Codex output did not match the expected contract."
                 output = AgentOutput(
                     task_id=contract.task_id,
                     agent_id=agent.agent_id,

@@ -238,3 +238,41 @@ def test_output_collector_prefers_final_message_text_over_stdout_noise():
     assert output.kind == "final"
     assert output.output_parse_status == "ok"
     assert output.summary == "Final assistant message captured from codex exec."
+
+
+def test_output_collector_prefers_schema_output_when_available():
+    output = OutputCollector().summarize_task_output(
+        agent_id="agent-1",
+        task_id="task-1",
+        log_text="noise only\n",
+        schema_output_text="""
+        {
+          "status_signal": "done",
+          "summary": "Schema output captured from codex exec.",
+          "question_for_leader": [],
+          "requested_context": [],
+          "followup_suggestion": [],
+          "dependency_note": [],
+          "changed_files": ["app/services.py"],
+          "test_results": ["pytest -q"],
+          "risk_flags": []
+        }
+        """,
+    )
+
+    assert output.kind == "final"
+    assert output.output_parse_status == "ok"
+    assert output.summary == "Schema output captured from codex exec."
+    assert output.changed_files == ["app/services.py"]
+
+
+def test_output_collector_marks_invalid_schema_output():
+    output = OutputCollector().summarize_task_output(
+        agent_id="agent-1",
+        task_id="task-1",
+        log_text="noise only\n",
+        schema_output_text='{"status_signal":"done","summary":42}',
+    )
+
+    assert output.kind == "delta"
+    assert output.output_parse_status == "schema_contract_failed"

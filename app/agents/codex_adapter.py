@@ -82,6 +82,7 @@ class CodexAdapter:
             f"{expected}\n"
             f"completion_rule: {contract.completion_rule}\n"
             "response_rules:\n"
+            "- If the runner provides an output schema, return a final response that conforms to that schema.\n"
             "- Output exactly one ALVIS_RESULT_START ... ALVIS_RESULT_END block.\n"
             "- Do not include any text before or after the result block.\n"
             "- Replace every placeholder with a real value or leave the section empty.\n"

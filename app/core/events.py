@@ -3,8 +3,10 @@ from __future__ import annotations
 from app.enums import EventType
 
 
-def event_payload(summary: str, **extra):
-    payload = {"summary": summary}
+def event_payload(message: str, /, **extra):
+    payload = {"summary": message}
+    if "summary" in extra and "detail_summary" not in extra:
+        extra["detail_summary"] = extra.pop("summary")
     payload.update(extra)
     return payload
 

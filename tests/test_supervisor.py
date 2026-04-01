@@ -156,6 +156,46 @@ def test_supervisor_limits_redo_chain_per_source_task(tmp_path):
     assert any("Redo suppressed" in (event.payload.get("summary") or "") for event in events)
 
 
+def test_supervisor_records_parse_failure_without_event_payload_crash(tmp_path):
+    services = create_services(tmp_path)
+    team_id = f"parse-fail-{uuid4().hex[:8]}"
+    services.create_team(team_id, "implementer:builder", "reviewer:checker")
+    supervisor = Supervisor(SupervisorDeps(services=services))
+
+    def parse_failed_dispatch(agent_id, contract):
+        services.append_event(
+            team_id=team_id,
+            run_id=contract.context["run_id"],
+            task_id=contract.task_id,
+            agent_id=agent_id,
+            event_type=EventType.AGENT_OUTPUT_FINAL.value,
+            payload={
+                "task_id": contract.task_id,
+                "agent_id": agent_id,
+                "kind": "final",
+                "status_signal": "blocked",
+                "summary": "Task did not produce a valid structured result block.",
+                "output_parse_status": "schema_parse_failed",
+                "question_for_leader": [],
+                "requested_context": [],
+                "followup_suggestion": [],
+                "dependency_note": [],
+                "changed_files": [],
+                "test_results": [],
+                "risk_flags": ["Structured Codex output could not be parsed as JSON."],
+            },
+        )
+        return type("Dispatch", (), {"ok": True, "reason": "background_exec", "prompt": "parse-failed"})()
+
+    services.dispatch_task = parse_failed_dispatch  # type: ignore[method-assign]
+
+    state = supervisor.run(team_id, "fix a bug")
+    events = services.list_events(team_id=team_id, run_id=state["run_id"])
+
+    assert state["status"] == RunStatus.FAILED.value
+    assert any(event.payload.get("summary") == "응답 파싱 실패" for event in events if event.event_type == EventType.ERROR_RAISED.value)
+
+
 def test_supervisor_persists_checkpoint_for_active_run(tmp_path):
     services = create_services(tmp_path)
     team_id = f"checkpoint-team-{uuid4().hex[:8]}"

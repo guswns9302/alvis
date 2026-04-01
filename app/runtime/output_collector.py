@@ -20,6 +20,8 @@ class OutputCollector:
     PARSE_OK = "ok"
     PARSE_NO_RESULT_BLOCK = "no_result_block"
     PARSE_INVALID_RESULT_BLOCK = "invalid_result_block"
+    PARSE_SCHEMA_PARSE_FAILED = "schema_parse_failed"
+    PARSE_SCHEMA_CONTRACT_FAILED = "schema_contract_failed"
     ANSI_PATTERN = re.compile(r"\x1b(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~]|\].*?(?:\x07|\x1b\\))")
     RESULT_START = "ALVIS_RESULT_START"
     RESULT_END = "ALVIS_RESULT_END"
@@ -239,7 +241,90 @@ class OutputCollector:
             risk_flags=risk_flags,
         )
 
-    def summarize_task_output(self, *, agent_id: str, task_id: str, log_text: str, final_message_text: str | None = None) -> AgentOutput:
+    def _parse_schema_output(self, *, agent_id: str, task_id: str, schema_output_text: str) -> AgentOutput:
+        try:
+            payload = json.loads(schema_output_text)
+        except json.JSONDecodeError:
+            return AgentOutput(
+                task_id=task_id,
+                agent_id=agent_id,
+                kind="delta",
+                output_parse_status=self.PARSE_SCHEMA_PARSE_FAILED,
+                summary="No usable task output captured yet.",
+            )
+        if not isinstance(payload, dict):
+            return AgentOutput(
+                task_id=task_id,
+                agent_id=agent_id,
+                kind="delta",
+                output_parse_status=self.PARSE_SCHEMA_CONTRACT_FAILED,
+                summary="No usable task output captured yet.",
+            )
+
+        status_signal = str(payload.get("status_signal") or "").strip().lower()
+        summary = payload.get("summary")
+        if status_signal not in self.VALID_STATUS_SIGNALS or not isinstance(summary, str) or not summary.strip():
+            return AgentOutput(
+                task_id=task_id,
+                agent_id=agent_id,
+                kind="delta",
+                output_parse_status=self.PARSE_SCHEMA_CONTRACT_FAILED,
+                summary="No usable task output captured yet.",
+            )
+
+        list_fields = {
+            "question_for_leader": [],
+            "requested_context": [],
+            "followup_suggestion": [],
+            "dependency_note": [],
+            "changed_files": [],
+            "test_results": [],
+            "risk_flags": [],
+        }
+        normalized_lists: dict[str, list[str]] = {}
+        for field_name, default in list_fields.items():
+            value = payload.get(field_name, default)
+            if not isinstance(value, list) or any(not isinstance(item, str) for item in value):
+                return AgentOutput(
+                    task_id=task_id,
+                    agent_id=agent_id,
+                    kind="delta",
+                    output_parse_status=self.PARSE_SCHEMA_CONTRACT_FAILED,
+                    summary="No usable task output captured yet.",
+                )
+            normalized_lists[field_name] = [item.strip() for item in value if item.strip()]
+
+        return AgentOutput(
+            task_id=task_id,
+            agent_id=agent_id,
+            kind="final",
+            summary=summary.strip(),
+            status_signal=status_signal,
+            output_parse_status=self.PARSE_OK,
+            question_for_leader=normalized_lists["question_for_leader"],
+            requested_context=normalized_lists["requested_context"],
+            followup_suggestion=normalized_lists["followup_suggestion"],
+            dependency_note=normalized_lists["dependency_note"],
+            changed_files=normalized_lists["changed_files"],
+            test_results=normalized_lists["test_results"],
+            risk_flags=normalized_lists["risk_flags"],
+        )
+
+    def summarize_task_output(
+        self,
+        *,
+        agent_id: str,
+        task_id: str,
+        log_text: str,
+        final_message_text: str | None = None,
+        schema_output_text: str | None = None,
+    ) -> AgentOutput:
+        if schema_output_text and schema_output_text.strip():
+            return self._parse_schema_output(
+                agent_id=agent_id,
+                task_id=task_id,
+                schema_output_text=schema_output_text,
+            )
         parse_input = final_message_text if final_message_text and final_message_text.strip() else log_text
         ansi_stripped = self._strip_ansi(parse_input)
         clean_text = self._normalize_text(log_text)
