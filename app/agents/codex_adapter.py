@@ -12,46 +12,57 @@ class CodexAdapter:
         (
             re.compile(r"not inside a trusted directory", re.IGNORECASE),
             "Codex가 현재 작업 디렉터리를 신뢰된 작업 디렉터리로 인식하지 못했습니다.",
+            "작업 디렉터리 신뢰 설정을 확인한 뒤 다시 시도하세요.",
         ),
         (
             re.compile(r"(?:unknown|unrecognized|unexpected) (?:option|argument)", re.IGNORECASE),
             "Codex 실행 옵션이 현재 설치된 Codex 버전과 맞지 않아 실행에 실패했습니다.",
+            "Codex 버전과 Alvis worker backend 구성을 다시 확인하세요.",
         ),
         (
             re.compile(r"stdin is not a terminal", re.IGNORECASE),
             "Codex 비대화형 실행이 현재 stdin 계약과 맞지 않아 종료되었습니다.",
+            "command backend 대신 Codex SDK backend를 사용하거나 Codex CLI 버전을 확인하세요.",
         ),
         (
             re.compile(r"No prompt provided", re.IGNORECASE),
             "Codex 실행에 작업 프롬프트가 전달되지 않아 종료되었습니다.",
+            "worker invocation contract를 다시 확인하세요.",
         ),
         (
             re.compile(r"Attempted to create a NULL object|system-configuration", re.IGNORECASE),
             "Codex 비대화형 실행이 현재 macOS 환경과의 호환성 문제로 종료되었습니다.",
+            "Codex SDK 또는 Codex CLI 버전과 macOS 환경을 다시 확인하세요.",
         ),
         (
-            re.compile(r"OpenAI Python SDK is not installed", re.IGNORECASE),
-            "OpenAI Python SDK가 설치되어 있지 않아 SDK worker를 시작할 수 없습니다.",
+            re.compile(r"@openai/codex-sdk|Codex SDK", re.IGNORECASE),
+            "Codex SDK 런타임이 설치되어 있지 않아 worker를 시작할 수 없습니다.",
+            "`alvis upgrade`를 실행해 Codex SDK 런타임을 다시 설치하세요.",
         ),
         (
-            re.compile(r"OPENAI_API_KEY", re.IGNORECASE),
-            "OpenAI API 인증 정보가 없어 SDK worker를 시작할 수 없습니다.",
+            re.compile(r"CODEX_API_KEY", re.IGNORECASE),
+            "Codex SDK 인증 정보가 없어 worker를 시작할 수 없습니다.",
+            "`export CODEX_API_KEY=...` 후 다시 시도하세요.",
         ),
         (
             re.compile(r"npm error code EACCES", re.IGNORECASE),
             "Codex가 전역 npm 업데이트를 시도했지만 권한 오류(EACCES)로 종료되었습니다.",
+            "npm 권한 문제를 해결한 뒤 다시 시도하세요.",
         ),
         (
             re.compile(r"npm install -g @openai/codex", re.IGNORECASE),
             "Codex 업데이트 프롬프트가 전역 설치를 시도하다 실패했습니다.",
+            "Codex CLI를 직접 업데이트하거나 command backend 사용을 피하세요.",
         ),
         (
             re.compile(r"permission denied", re.IGNORECASE),
             "Codex 실행 중 권한 오류가 발생했습니다.",
+            "권한 또는 실행 경로를 확인한 뒤 다시 시도하세요.",
         ),
         (
             re.compile(r"Update available!", re.IGNORECASE),
             "Codex 업데이트 프롬프트가 표시된 것으로 보입니다.",
+            "Codex를 최신 버전으로 업데이트한 뒤 다시 시도하세요.",
         ),
     )
 
@@ -154,11 +165,11 @@ class CodexAdapter:
             return {}
         lines = [line.strip() for line in text.splitlines() if line.strip()]
         last_line = lines[-1] if lines else ""
-        for pattern, summary in self.STDERR_PATTERNS:
+        for pattern, summary, hint in self.STDERR_PATTERNS:
             if pattern.search(text):
                 return {
                     "summary": summary,
-                    "hint": "터미널에서 `codex`를 직접 실행해 업데이트 프롬프트를 넘기거나 권한 문제를 해결한 뒤 다시 시도하세요.",
+                    "hint": hint,
                     "last_line": last_line,
                 }
         return {

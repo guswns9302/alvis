@@ -23,6 +23,22 @@ def install_bin_dir(settings: Settings) -> Path:
     return settings.app_home / "bin"
 
 
+def install_node_runtime_dir(settings: Settings) -> Path:
+    return settings.app_home / "node-runtime"
+
+
+def install_node_worker_path(settings: Settings) -> Path:
+    return install_node_runtime_dir(settings) / "worker.mjs"
+
+
+def install_node_package_path(settings: Settings) -> Path:
+    return install_node_runtime_dir(settings) / "package.json"
+
+
+def install_node_modules_dir(settings: Settings) -> Path:
+    return install_node_runtime_dir(settings) / "node_modules"
+
+
 def install_wrapper_path(settings: Settings) -> Path:
     return install_bin_dir(settings) / "alvis"
 
@@ -72,13 +88,25 @@ def inspect_installation_state(settings: Settings) -> dict:
     app_dir = install_app_dir(settings)
     wrapper = install_wrapper_path(settings)
     venv_entrypoint = install_venv_entrypoint_path(settings)
+    node_runtime = install_node_runtime_dir(settings)
+    node_worker = install_node_worker_path(settings)
+    node_package = install_node_package_path(settings)
+    node_modules = install_node_modules_dir(settings)
+    codex_sdk_package = node_modules / "@openai" / "codex-sdk" / "package.json"
     return {
         "metadata_version": metadata.get("version"),
         "installed_app_version": read_installed_app_version(settings),
         "app_dir_exists": app_dir.exists(),
         "wrapper_exists": wrapper.exists(),
         "venv_entrypoint_exists": venv_entrypoint.exists(),
+        "node_runtime_dir_exists": node_runtime.exists(),
+        "node_worker_exists": node_worker.exists(),
+        "node_package_exists": node_package.exists(),
+        "codex_sdk_package_installed": codex_sdk_package.exists(),
         "app_dir": str(app_dir),
         "wrapper_path": str(wrapper),
         "venv_entrypoint_path": str(venv_entrypoint),
+        "node_runtime_dir": str(node_runtime),
+        "node_worker_path": str(node_worker),
+        "node_package_path": str(node_package),
     }

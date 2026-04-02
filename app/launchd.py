@@ -51,9 +51,12 @@ class LaunchdManager:
             f"    <key>ALVIS_WORKER_TIMEOUT_SECONDS</key>\n    <string>{self.settings.worker_timeout_seconds}</string>\n",
             f"    <key>ALVIS_WORKER_MAX_TOOL_ROUNDS</key>\n    <string>{self.settings.worker_max_tool_rounds}</string>\n",
         ]
-        if self.settings.openai_api_key:
+        if self.settings.codex_api_key:
             extra_env.append(
-                f"    <key>ALVIS_OPENAI_API_KEY</key>\n    <string>{self.settings.openai_api_key}</string>\n"
+                f"    <key>ALVIS_CODEX_API_KEY</key>\n    <string>{self.settings.codex_api_key}</string>\n"
+            )
+            extra_env.append(
+                f"    <key>CODEX_API_KEY</key>\n    <string>{self.settings.codex_api_key}</string>\n"
             )
         return f"""<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">

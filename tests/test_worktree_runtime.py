@@ -348,7 +348,7 @@ def test_refresh_agent_runtime_surfaces_background_failure_reason(tmp_path):
     assert output.status_signal == "blocked"
     assert output.output_parse_status == "runtime_exec_failed"
     assert "Codex 실행 옵션이 현재 설치된 Codex 버전과 맞지 않아 실행에 실패했습니다." == output.summary
-    assert any("다시 시도하세요" in item for item in output.risk_flags)
+    assert any("Codex 버전" in item for item in output.risk_flags)
     assert any(
         event.event_type == EventType.ERROR_RAISED.value
         and event.payload.get("error_summary") == "Codex 실행 옵션이 현재 설치된 Codex 버전과 맞지 않아 실행에 실패했습니다."
@@ -374,7 +374,7 @@ def test_codex_runtime_health_extracts_permission_error_summary(tmp_path):
 
     assert health["status"] == "exited"
     assert "권한 오류(EACCES)" in health["error_summary"]
-    assert "codex" in health["error_hint"]
+    assert "npm 권한" in health["error_hint"]
 
 
 def test_codex_runtime_health_extracts_stdin_terminal_error(tmp_path):

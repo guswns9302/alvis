@@ -23,7 +23,7 @@ class FakeDaemonClient:
             "status": "ok",
             "version": cli_module.__version__,
             "daemon_codex_command": "/usr/local/bin/codex",
-            "daemon_worker_backend": "sdk",
+            "daemon_worker_backend": "codex-sdk",
             "daemon_worker_model": "gpt-5.4",
             "daemon_workspace_root": str(workspace_root or "/tmp/workspace"),
             "daemon_data_dir": "/tmp/data",
@@ -61,9 +61,9 @@ def _settings(tmp_path: Path) -> Settings:
         log_dir=data_dir / "logs",
         runtime_dir=data_dir / "runtime",
         worktree_root=data_dir / "worktrees",
-        worker_backend="sdk",
+        worker_backend="codex-sdk",
         worker_model="gpt-5.4",
-        openai_api_key="test-key",
+        codex_api_key="test-key",
         codex_command="/usr/local/bin/codex",
     )
 
@@ -83,21 +83,26 @@ def test_doctor_prints_daemon_runtime_details(monkeypatch, tmp_path):
             "venv_entrypoint_exists": True,
         },
     )
-    monkeypatch.setattr(cli_module.importlib.util, "find_spec", lambda name: object())
     monkeypatch.setattr(
-        cli_module.subprocess,
-        "run",
-        lambda *args, **kwargs: SimpleNamespace(returncode=0),
+        cli_module,
+        "verify_codex_sdk_runtime",
+        lambda settings: {
+            "node_available": True,
+            "npm_available": True,
+            "sdk_installed": True,
+            "sdk_import_error": None,
+        },
     )
+    monkeypatch.setattr(cli_module.subprocess, "run", lambda *args, **kwargs: SimpleNamespace(returncode=0))
 
     result = runner.invoke(cli_module.app, ["doctor"])
 
     assert result.exit_code == 0
     assert "daemon codex_command: /usr/local/bin/codex" in result.output
-    assert "worker backend: sdk" in result.output
-    assert "sdk package: ok" in result.output
-    assert "sdk api key: ok" in result.output
-    assert "daemon worker backend: sdk" in result.output
+    assert "worker backend: codex-sdk" in result.output
+    assert "codex sdk package: ok" in result.output
+    assert "codex api key: ok" in result.output
+    assert "daemon worker backend: codex-sdk" in result.output
     assert f"daemon version: {cli_module.__version__}" in result.output
     assert "daemon db_path: /tmp/data/alvis.db" in result.output
     assert "workspace teams: 1" in result.output
@@ -119,7 +124,16 @@ def test_doctor_warns_when_install_state_drifts(monkeypatch, tmp_path):
             "venv_entrypoint_exists": True,
         },
     )
-    monkeypatch.setattr(cli_module.importlib.util, "find_spec", lambda name: object())
+    monkeypatch.setattr(
+        cli_module,
+        "verify_codex_sdk_runtime",
+        lambda settings: {
+            "node_available": True,
+            "npm_available": True,
+            "sdk_installed": True,
+            "sdk_import_error": None,
+        },
+    )
     monkeypatch.setattr(cli_module.subprocess, "run", lambda *args, **kwargs: SimpleNamespace(returncode=0))
 
     result = runner.invoke(cli_module.app, ["doctor"])
@@ -195,7 +209,16 @@ def test_doctor_warns_when_daemon_version_mismatches(monkeypatch, tmp_path):
             "venv_entrypoint_exists": True,
         },
     )
-    monkeypatch.setattr(cli_module.importlib.util, "find_spec", lambda name: object())
+    monkeypatch.setattr(
+        cli_module,
+        "verify_codex_sdk_runtime",
+        lambda settings: {
+            "node_available": True,
+            "npm_available": True,
+            "sdk_installed": True,
+            "sdk_import_error": None,
+        },
+    )
     monkeypatch.setattr(cli_module.subprocess, "run", lambda *args, **kwargs: SimpleNamespace(returncode=0))
 
     result = runner.invoke(cli_module.app, ["doctor"])
@@ -205,27 +228,36 @@ def test_doctor_warns_when_daemon_version_mismatches(monkeypatch, tmp_path):
     assert "recommended action: run `alvis daemon restart` or `alvis upgrade` again" in result.output
 
 
-def test_doctor_warns_when_sdk_package_is_missing(monkeypatch, tmp_path):
+def test_doctor_warns_when_codex_sdk_package_is_missing(monkeypatch, tmp_path):
     monkeypatch.setattr(cli_module, "_workspace_root", lambda: tmp_path)
-    settings = _settings(tmp_path).model_copy(update={"openai_api_key": "test-key"})
+    settings = _settings(tmp_path).model_copy(update={"codex_api_key": "test-key"})
     monkeypatch.setattr(cli_module, "get_settings", lambda workspace_root=None: settings)
     monkeypatch.setattr(cli_module, "_daemon_client", lambda: FakeDaemonClient())
     monkeypatch.setattr(
         cli_module,
         "inspect_installation_state",
         lambda settings: {
-            "metadata_version": "v0.2.6",
-            "installed_app_version": "0.2.6",
+            "metadata_version": "v0.2.7",
+            "installed_app_version": "0.2.7",
             "app_dir_exists": True,
             "wrapper_exists": True,
             "venv_entrypoint_exists": True,
         },
     )
-    monkeypatch.setattr(cli_module.importlib.util, "find_spec", lambda name: None)
+    monkeypatch.setattr(
+        cli_module,
+        "verify_codex_sdk_runtime",
+        lambda settings: {
+            "node_available": True,
+            "npm_available": True,
+            "sdk_installed": False,
+            "sdk_import_error": "Cannot find package '@openai/codex-sdk'",
+        },
+    )
     monkeypatch.setattr(cli_module.subprocess, "run", lambda *args, **kwargs: SimpleNamespace(returncode=0))
 
     result = runner.invoke(cli_module.app, ["doctor"])
 
     assert result.exit_code == 0
-    assert "sdk package: missing" in result.output
-    assert "recommended action: run `alvis upgrade` to install SDK dependencies" in result.output
+    assert "codex sdk package: missing" in result.output
+    assert "recommended action: run `alvis upgrade` to install Codex SDK dependencies" in result.output

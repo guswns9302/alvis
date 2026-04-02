@@ -2,13 +2,14 @@ from __future__ import annotations
 
 import argparse
 import json
-import shlex
+import os
 import subprocess
 import time
 from pathlib import Path
 
+from app.config import Settings
+from app.runtime.codex_sdk_runtime import normalize_command_backend, run_codex_sdk_worker
 from app.runtime.output_collector import OutputCollector
-from app.runtime.sdk_worker import run_sdk_worker
 from app.schemas import TaskContract
 
 
@@ -47,15 +48,7 @@ def _build_schema() -> dict:
 
 
 def _build_invocation(command_text: str, schema_path: Path, schema_output_path: Path, last_message_path: Path) -> list[str]:
-    command = shlex.split(command_text)
-    if not command:
-        return ["codex", "exec", "--color", "never"]
-    executable = Path(command[0]).name
-    if executable == "codex" and "exec" not in command[1:]:
-        command = [*command, "exec", "--color", "never"]
-    if executable != "codex" or "exec" not in command[1:]:
-        return command
-    invocation = list(command)
+    invocation = normalize_command_backend(command_text)
     if invocation and invocation[-1] == "-":
         invocation = invocation[:-1]
     if "--skip-git-repo-check" not in invocation:
@@ -108,7 +101,7 @@ def _run_command_backend(
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--cwd", required=True)
-    parser.add_argument("--backend", default="sdk")
+    parser.add_argument("--backend", default="codex-sdk")
     parser.add_argument("--codex-command", required=True)
     parser.add_argument("--worker-model", default="gpt-5.4")
     parser.add_argument("--worker-reasoning-effort", default="medium")
@@ -139,6 +132,22 @@ def main() -> int:
 
     prompt_text = prompt_file.read_text(encoding="utf-8")
     contract = TaskContract.model_validate_json(contract_file.read_text(encoding="utf-8"))
+    settings = Settings(
+        repo_root=cwd,
+        app_home=Path(os.getenv("ALVIS_HOME", Path.home() / ".alvis")).expanduser(),
+        data_dir=state_file.parent,
+        db_path=state_file.parent / "alvis.db",
+        log_dir=state_file.parent,
+        runtime_dir=state_file.parent,
+        worktree_root=state_file.parent,
+        worker_backend=args.backend,
+        worker_model=args.worker_model,
+        worker_reasoning_effort=args.worker_reasoning_effort,
+        worker_timeout_seconds=args.worker_timeout_seconds,
+        worker_max_tool_rounds=args.worker_max_tool_rounds,
+        codex_api_key=os.getenv("ALVIS_CODEX_API_KEY") or os.getenv("CODEX_API_KEY"),
+        codex_command=args.codex_command,
+    )
     _write_json(
         state_file,
         {
@@ -166,20 +175,20 @@ def main() -> int:
     stdout_text = ""
     stderr_text = ""
     try:
-        if args.backend == "sdk":
-            output, final_text = run_sdk_worker(
-                prompt_text=prompt_text,
-                contract=contract,
+        if args.backend == "codex-sdk":
+            completed = run_codex_sdk_worker(
+                settings=settings,
+                prompt_file=prompt_file,
+                contract_file=contract_file,
+                schema_file=schema_path,
+                schema_output_file=schema_output_file,
+                last_message_file=last_message_file,
                 agent_id=args.agent_id,
-                api_key=None,
-                model=args.worker_model,
-                reasoning_effort=args.worker_reasoning_effort,
-                max_tool_rounds=args.worker_max_tool_rounds,
-                timeout_seconds=args.worker_timeout_seconds,
+                cwd=cwd,
             )
-            schema_output_file.write_text(output.model_dump_json(), encoding="utf-8")
-            last_message_file.write_text(final_text, encoding="utf-8")
-            stdout_text = f"SDK worker completed for {contract.task_id}\n"
+            exit_code = completed.returncode or 0
+            stdout_text = completed.stdout or ""
+            stderr_text = completed.stderr or ""
         else:
             completed = _run_command_backend(
                 command_text=args.codex_command,

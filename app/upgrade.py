@@ -23,6 +23,7 @@ from app.install_paths import (
 )
 from app.launchd import LaunchdManager
 from app.daemon_client import DaemonClient, DaemonUnavailableError
+from app.runtime.codex_sdk_runtime import install_codex_sdk_runtime, verify_codex_sdk_runtime
 from app.version import __version__
 
 
@@ -60,8 +61,9 @@ def _write_wrapper(settings: Settings, *, codex_command: str | None = None) -> P
         f'export ALVIS_WORKER_TIMEOUT_SECONDS="{settings.worker_timeout_seconds}"\n',
         f'export ALVIS_WORKER_MAX_TOOL_ROUNDS="{settings.worker_max_tool_rounds}"\n',
     ]
-    if settings.openai_api_key:
-        exports.append(f'export ALVIS_OPENAI_API_KEY="{settings.openai_api_key}"\n')
+    if settings.codex_api_key:
+        exports.append(f'export ALVIS_CODEX_API_KEY="{settings.codex_api_key}"\n')
+        exports.append(f'export CODEX_API_KEY="{settings.codex_api_key}"\n')
     if codex_command or settings.codex_command:
         exports.append(f'export ALVIS_CODEX_COMMAND="{codex_command or settings.codex_command}"\n')
     wrapper.write_text(
@@ -90,23 +92,14 @@ def _persist_metadata(settings: Settings, *, version: str, tarball_url: str) -> 
 
 
 def _verify_sdk_installation(settings: Settings) -> dict:
-    python_bin = install_venv_dir(settings) / "bin" / "python"
-    if not python_bin.exists():
+    if settings.worker_backend != "codex-sdk":
         return {
-            "sdk_installed": False,
-            "sdk_import_error": "venv python entrypoint is missing",
+            "sdk_installed": True,
+            "sdk_import_error": None,
+            "node_available": None,
+            "npm_available": None,
         }
-    result = subprocess.run(
-        [str(python_bin), "-c", "import openai"],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    error = (result.stderr or result.stdout or "").strip() or None
-    return {
-        "sdk_installed": result.returncode == 0,
-        "sdk_import_error": None if result.returncode == 0 else error,
-    }
+    return verify_codex_sdk_runtime(settings)
 
 
 def _verify_daemon_version(settings: Settings, target_version: str) -> dict:
@@ -164,6 +157,10 @@ def _install_from_source(
         subprocess.run(["python3", "-m", "venv", str(venv_dir)], check=True)
     subprocess.run([str(venv_dir / "bin" / "python"), "-m", "pip", "install", "--upgrade", "pip"], check=True)
     subprocess.run([str(venv_dir / "bin" / "python"), "-m", "pip", "install", str(app_dir)], check=True)
+    if settings.worker_backend == "codex-sdk":
+        sdk_result = install_codex_sdk_runtime(settings)
+        if not sdk_result.get("sdk_installed"):
+            raise RuntimeError(sdk_result.get("sdk_import_error") or "failed to install Codex SDK runtime")
     _write_wrapper(settings, codex_command=codex_command)
     _persist_metadata(settings, version=version, tarball_url=tarball_url)
 

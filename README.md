@@ -1,13 +1,14 @@
 # Alvis
 
-`alvis` is a CLI-first multi-worker orchestrator backed by `LangGraph`, the OpenAI Python SDK, and a local workspace-scoped SQLite state store.
+`alvis` is a CLI-first multi-worker orchestrator backed by `LangGraph`, the Codex SDK runtime, and a local workspace-scoped SQLite state store.
 
 ## Requirements
 
 - Python 3.12+
-- `OPENAI_API_KEY`
+- Node.js + npm
+- `CODEX_API_KEY`
 
-Legacy `codex` CLI worker execution is still available as a fallback backend, but the default worker path uses the OpenAI Python SDK.
+Legacy `codex` CLI worker execution is still available as a fallback backend, but the default worker path uses the Codex SDK runtime.
 
 ## Install
 
@@ -56,8 +57,8 @@ alvis clean
 ## Runtime Model
 
 - `LangGraph` is the orchestration control plane
-- worker tasks run through an SDK-backed Python worker runtime
-- the default worker runtime uses OpenAI Responses API function-calling with a local tool bridge
+- worker tasks run through a Node-based Codex SDK runtime
+- the default worker runtime uses `@openai/codex-sdk`
 - worker outputs are schema-first structured results
 - `SQLite` stores teams, runs, tasks, interactions, checkpoints, and events
 - runtime files under the workspace data directory track heartbeat, process state, stdout, stderr, prompt, and structured output artifacts
@@ -79,8 +80,8 @@ alvis upgrade
 alvis upgrade --version v0.2.1
 ```
 
-The upgrade path reinstalls the package, restarts the daemon, and verifies daemon version alignment with the CLI version.
-Use `alvis doctor` to confirm SDK package readiness, API key configuration, and installed-state alignment.
+The upgrade path reinstalls the package, refreshes the Node Codex SDK runtime, restarts the daemon, and verifies daemon version alignment with the CLI version.
+Use `alvis doctor` to confirm Node/npm, Codex SDK package readiness, API key configuration, and installed-state alignment.
 
 Recommended verification after upgrade:
 

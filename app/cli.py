@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import importlib.util
 import os
 import subprocess
 import sys
@@ -28,6 +27,7 @@ from app.install_paths import inspect_installation_state
 from app.launchd import LaunchdManager
 from app.logging import configure_logging
 from app.rich_repl import ReplBackend, launch_repl
+from app.runtime.codex_sdk_runtime import verify_codex_sdk_runtime
 from app.upgrade import perform_upgrade
 from app.version import __version__
 
@@ -116,6 +116,12 @@ def doctor(json_output: bool = typer.Option(False, "--json")):
         daemon = client.health(_workspace_root())
     except DaemonUnavailableError:
         daemon = {"status": "unreachable"}
+    sdk_runtime = verify_codex_sdk_runtime(settings) if settings.worker_backend == "codex-sdk" else {
+        "node_available": subprocess.run(["which", "node"], check=False, capture_output=True, text=True).returncode == 0,
+        "npm_available": subprocess.run(["which", "npm"], check=False, capture_output=True, text=True).returncode == 0,
+        "sdk_installed": False,
+        "sdk_import_error": None,
+    }
     payload = {
         "version": __version__,
         "workspace_root": str(_workspace_root()),
@@ -126,8 +132,10 @@ def doctor(json_output: bool = typer.Option(False, "--json")):
         "daemon": daemon,
         "worker_backend": settings.worker_backend,
         "worker_model": settings.worker_model,
-        "sdk_package_available": importlib.util.find_spec("openai") is not None,
-        "sdk_api_key_configured": bool(settings.openai_api_key),
+        "node_available": sdk_runtime.get("node_available"),
+        "npm_available": sdk_runtime.get("npm_available"),
+        "codex_sdk_package_available": sdk_runtime.get("sdk_installed"),
+        "codex_api_key_configured": bool(settings.codex_api_key),
         "shell_codex_command": settings.codex_command,
         "shell_codex_available": subprocess.run(["which", "codex"], check=False, capture_output=True, text=True).returncode == 0,
         "install_metadata_version": install_state.get("metadata_version"),
@@ -138,11 +146,15 @@ def doctor(json_output: bool = typer.Option(False, "--json")):
     daemon_version_matches = _normalize_version(daemon_version) == _normalize_version(__version__) if daemon_version else None
     payload["daemon_version_matches"] = daemon_version_matches
     payload["install_version_matches"] = _normalize_version(payload["install_metadata_version"]) == _normalize_version(payload["installed_app_version"])
-    if payload["worker_backend"] == "sdk" and not payload["sdk_package_available"]:
-        next_action = "run `alvis upgrade` to install SDK dependencies"
-    elif payload["worker_backend"] == "sdk" and not payload["sdk_api_key_configured"]:
-        next_action = "export OPENAI_API_KEY and rerun `alvis doctor`"
-    elif payload["worker_backend"] != "sdk" and not payload["shell_codex_available"]:
+    if payload["worker_backend"] == "codex-sdk" and not payload["node_available"]:
+        next_action = "install node and rerun `alvis doctor`"
+    elif payload["worker_backend"] == "codex-sdk" and not payload["npm_available"]:
+        next_action = "install npm and rerun `alvis doctor`"
+    elif payload["worker_backend"] == "codex-sdk" and not payload["codex_sdk_package_available"]:
+        next_action = "run `alvis upgrade` to install Codex SDK dependencies"
+    elif payload["worker_backend"] == "codex-sdk" and not payload["codex_api_key_configured"]:
+        next_action = "export CODEX_API_KEY and rerun `alvis doctor`"
+    elif payload["worker_backend"] != "codex-sdk" and not payload["shell_codex_available"]:
         next_action = "install codex and rerun `alvis doctor`"
     elif payload["install_drift_detected"]:
         next_action = "run `alvis upgrade` to repair the installed app state"
@@ -167,8 +179,10 @@ def doctor(json_output: bool = typer.Option(False, "--json")):
                 f"daemon: {data['daemon'].get('status', 'unknown')}",
                 f"worker backend: {data.get('worker_backend') or '-'}",
                 f"worker model: {data.get('worker_model') or '-'}",
-                f"sdk package: {'ok' if data.get('sdk_package_available') else 'missing'}",
-                f"sdk api key: {'ok' if data.get('sdk_api_key_configured') else 'missing'}",
+                f"node: {'ok' if data.get('node_available') else 'missing'}",
+                f"npm: {'ok' if data.get('npm_available') else 'missing'}",
+                f"codex sdk package: {'ok' if data.get('codex_sdk_package_available') else 'missing'}",
+                f"codex api key: {'ok' if data.get('codex_api_key_configured') else 'missing'}",
                 f"shell codex_command: {data.get('shell_codex_command') or '-'}",
                 f"shell codex: {'ok' if data['shell_codex_available'] else 'missing'}",
                 f"install metadata version: {data.get('install_metadata_version') or '-'}",

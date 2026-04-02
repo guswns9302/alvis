@@ -15,6 +15,8 @@ require_cmd() {
 require_cmd python3
 require_cmd curl
 require_cmd tar
+require_cmd node
+require_cmd npm
 CODEX_PATH="${ALVIS_CODEX_COMMAND:-}"
 if [ -z "$CODEX_PATH" ] && command -v codex >/dev/null 2>&1; then
   CODEX_PATH="$(command -v codex)"
@@ -83,6 +85,6 @@ echo "Home: $ALVIS_HOME"
 echo "Binary: $TARGET_BIN/alvis"
 echo "Next steps:"
 echo "  1. alvis doctor"
-echo "  2. export OPENAI_API_KEY=..."
+echo "  2. export CODEX_API_KEY=..."
 echo "  3. alvis start"
 echo "If '$HOME/.local/bin' is not on PATH, add it to your shell profile."
