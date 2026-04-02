@@ -11,6 +11,8 @@ class FakeServices:
         return {
             "status": "ok",
             "codex_command": "/usr/local/bin/codex",
+            "worker_backend": "sdk",
+            "worker_model": "gpt-5.4",
             "workspace_root": "/tmp/workspace",
             "data_dir": "/tmp/data",
             "db_path": "/tmp/data/alvis.db",
@@ -35,6 +37,8 @@ def test_health_reports_daemon_runtime(monkeypatch):
     payload = response.json()
     assert payload["status"] == "ok"
     assert payload["daemon_codex_command"] == "/usr/local/bin/codex"
+    assert payload["daemon_worker_backend"] == "sdk"
+    assert payload["daemon_worker_model"] == "gpt-5.4"
     assert payload["daemon_workspace_root"] == "/tmp/workspace"
     assert payload["daemon_db_path"] == "/tmp/data/alvis.db"
     assert payload["daemon_team_count"] == 2

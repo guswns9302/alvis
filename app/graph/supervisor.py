@@ -38,6 +38,15 @@ class Supervisor:
         self.log = get_logger(__name__)
         self._compiled_graphs: dict[str, Any] = {}
 
+    def _graph_invoke_config(self) -> dict[str, Any]:
+        return {"recursion_limit": self.deps.services.settings.graph_recursion_limit}
+
+    def _invoke_graph(self, graph: Any, state: AlvisRunState):
+        try:
+            return graph.invoke(state, self._graph_invoke_config())
+        except TypeError:
+            return graph.invoke(state)
+
     def _extract_paths(self, request: str) -> list[str]:
         tokens = [token.strip("`'\",.") for token in request.split()]
         paths = []
@@ -153,7 +162,7 @@ class Supervisor:
         graph = self.build_graph("ingest_request")
         if graph is None:
             return self._execute_from_node(state, "ingest_request")
-        return graph.invoke(state)
+        return self._invoke_graph(graph, state)
 
     def resume(self, run_id: str) -> AlvisRunState:
         checkpoint = self.deps.services.load_checkpoint(run_id)
@@ -164,7 +173,7 @@ class Supervisor:
         if graph is None:
             state = self._refresh_state_from_db(state)
             return self._execute_from_node(state, checkpoint.next_node)
-        return graph.invoke(state)
+        return self._invoke_graph(graph, state)
 
     def _refresh_state_from_db(self, state: AlvisRunState) -> AlvisRunState:
         if "run_id" not in state:
@@ -491,6 +500,7 @@ class Supervisor:
     def ingest_request(self, state: AlvisRunState) -> AlvisRunState:
         team_id = state["team_id"]
         run = self.deps.services.create_run(team_id, state["user_request"])
+        self.deps.services.finalize_run(run.run_id, RunStatus.RUNNING)
         self.deps.services.append_event(
             team_id=team_id,
             run_id=run.run_id,
@@ -624,8 +634,10 @@ class Supervisor:
         if state.get("pending_interactions"):
             self._save_linear_checkpoint(state, "wait_for_updates")
             return state
-        sleep(max(0.0, self.deps.services.settings.graph_poll_interval_seconds))
-        self.deps.services.collect_outputs(state["team_id"])
+        outputs = self.deps.services.collect_outputs(state["team_id"])
+        if not outputs:
+            sleep(max(0.0, self.deps.services.settings.graph_poll_interval_seconds))
+            self.deps.services.collect_outputs(state["team_id"])
         self._save_linear_checkpoint(state, "wait_for_updates")
         return state
 

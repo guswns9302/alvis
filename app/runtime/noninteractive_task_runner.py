@@ -8,6 +8,8 @@ import time
 from pathlib import Path
 
 from app.runtime.output_collector import OutputCollector
+from app.runtime.sdk_worker import run_sdk_worker
+from app.schemas import TaskContract
 
 
 def _write_json(path: Path, payload: dict) -> None:
@@ -88,11 +90,33 @@ def _run_generic_command(command: list[str], prompt_text: str, cwd: Path) -> sub
     )
 
 
+def _run_command_backend(
+    *,
+    command_text: str,
+    prompt_text: str,
+    cwd: Path,
+    schema_path: Path,
+    schema_output_file: Path,
+    last_message_file: Path,
+) -> subprocess.CompletedProcess[str]:
+    command = _build_invocation(command_text, schema_path, schema_output_file, last_message_file)
+    if _is_codex_exec_command(command):
+        return _run_codex_exec(command, prompt_text, cwd)
+    return _run_generic_command(command, prompt_text, cwd)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--cwd", required=True)
+    parser.add_argument("--backend", default="sdk")
     parser.add_argument("--codex-command", required=True)
+    parser.add_argument("--worker-model", default="gpt-5.4")
+    parser.add_argument("--worker-reasoning-effort", default="medium")
+    parser.add_argument("--worker-timeout-seconds", type=int, default=180)
+    parser.add_argument("--worker-max-tool-rounds", type=int, default=12)
+    parser.add_argument("--agent-id", required=True)
     parser.add_argument("--prompt-file", required=True)
+    parser.add_argument("--contract-file", required=True)
     parser.add_argument("--heartbeat-file", required=True)
     parser.add_argument("--stdout-file", required=True)
     parser.add_argument("--stderr-file", required=True)
@@ -103,6 +127,7 @@ def main() -> int:
 
     cwd = Path(args.cwd)
     prompt_file = Path(args.prompt_file)
+    contract_file = Path(args.contract_file)
     heartbeat_file = Path(args.heartbeat_file)
     stdout_file = Path(args.stdout_file)
     stderr_file = Path(args.stderr_file)
@@ -113,41 +138,80 @@ def main() -> int:
     schema_path.write_text(json.dumps(_build_schema(), ensure_ascii=False), encoding="utf-8")
 
     prompt_text = prompt_file.read_text(encoding="utf-8")
-    command = _build_invocation(args.codex_command, schema_path, schema_output_file, last_message_file)
-    _write_json(state_file, {"status": "starting", "cwd": str(cwd), "command": command, "output_collected": False})
+    contract = TaskContract.model_validate_json(contract_file.read_text(encoding="utf-8"))
+    _write_json(
+        state_file,
+        {
+            "status": "starting",
+            "cwd": str(cwd),
+            "backend": args.backend,
+            "command": args.codex_command,
+            "output_collected": False,
+        },
+    )
 
     started_at = time.time()
-    state_payload = {
-        "status": "running",
-        "cwd": str(cwd),
-        "command": command,
-        "output_collected": False,
-        "started_at": started_at,
-    }
-    if _is_codex_exec_command(command):
-        _write_json(state_file, state_payload)
-        completed = _run_codex_exec(command, prompt_text, cwd)
-        pid = None
-    else:
-        _write_json(state_file, state_payload)
-        completed = _run_generic_command(command, prompt_text, cwd)
-        pid = None
+    _write_json(
+        state_file,
+        {
+            "status": "running",
+            "cwd": str(cwd),
+            "backend": args.backend,
+            "command": args.codex_command,
+            "output_collected": False,
+            "started_at": started_at,
+        },
+    )
+    exit_code = 0
+    stdout_text = ""
+    stderr_text = ""
+    try:
+        if args.backend == "sdk":
+            output, final_text = run_sdk_worker(
+                prompt_text=prompt_text,
+                contract=contract,
+                agent_id=args.agent_id,
+                api_key=None,
+                model=args.worker_model,
+                reasoning_effort=args.worker_reasoning_effort,
+                max_tool_rounds=args.worker_max_tool_rounds,
+                timeout_seconds=args.worker_timeout_seconds,
+            )
+            schema_output_file.write_text(output.model_dump_json(), encoding="utf-8")
+            last_message_file.write_text(final_text, encoding="utf-8")
+            stdout_text = f"SDK worker completed for {contract.task_id}\n"
+        else:
+            completed = _run_command_backend(
+                command_text=args.codex_command,
+                prompt_text=prompt_text,
+                cwd=cwd,
+                schema_path=schema_path,
+                schema_output_file=schema_output_file,
+                last_message_file=last_message_file,
+            )
+            exit_code = completed.returncode or 0
+            stdout_text = completed.stdout or ""
+            stderr_text = completed.stderr or ""
+        heartbeat_file.write_text(json.dumps({"heartbeat_at": time.time()}), encoding="utf-8")
+    except Exception as exc:  # pragma: no cover - runtime path
+        exit_code = 1
+        stderr_text = str(exc)
 
-    stdout_file.write_text(completed.stdout or "", encoding="utf-8")
-    stderr_file.write_text(completed.stderr or "", encoding="utf-8")
-    _write_json(heartbeat_file, {"heartbeat_at": time.time()})
-    exited_state = {
-        "status": "exited",
-        "cwd": str(cwd),
-        "command": command,
-        "exit_code": completed.returncode,
-        "output_collected": False,
-        "finished_at": time.time(),
-    }
-    if pid is not None:
-        exited_state["pid"] = pid
-    _write_json(state_file, exited_state)
-    return completed.returncode or 0
+    stdout_file.write_text(stdout_text, encoding="utf-8")
+    stderr_file.write_text(stderr_text, encoding="utf-8")
+    _write_json(
+        state_file,
+        {
+            "status": "exited",
+            "cwd": str(cwd),
+            "backend": args.backend,
+            "command": args.codex_command,
+            "exit_code": exit_code,
+            "output_collected": False,
+            "finished_at": time.time(),
+        },
+    )
+    return exit_code
 
 
 if __name__ == "__main__":

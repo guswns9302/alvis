@@ -15,9 +15,10 @@ require_cmd() {
 require_cmd python3
 require_cmd curl
 require_cmd tar
-require_cmd codex
-
-CODEX_PATH="$(command -v codex)"
+CODEX_PATH="${ALVIS_CODEX_COMMAND:-}"
+if [ -z "$CODEX_PATH" ] && command -v codex >/dev/null 2>&1; then
+  CODEX_PATH="$(command -v codex)"
+fi
 
 mkdir -p "$ALVIS_HOME"
 TMP_DIR="$(mktemp -d)"
@@ -54,16 +55,18 @@ from app.upgrade import install_from_source
 settings = get_settings(Path.cwd()).model_copy(
     update={
         "app_home": Path(os.environ["ALVIS_HOME"]).expanduser(),
-        "codex_command": os.environ["ALVIS_CODEX_COMMAND"],
         "release_repo": os.environ["ALVIS_RELEASE_REPO"],
     }
 )
+codex_command = os.environ.get("ALVIS_CODEX_COMMAND") or None
+if codex_command:
+    settings = settings.model_copy(update={"codex_command": codex_command})
 install_from_source(
     settings,
     Path(os.environ["ALVIS_EXTRACTED_DIR"]),
     version=os.environ["ALVIS_TAG_NAME"],
     tarball_url=os.environ["ALVIS_TARBALL_URL"],
-    codex_command=os.environ["ALVIS_CODEX_COMMAND"],
+    codex_command=codex_command,
 )
 PY
 
@@ -80,5 +83,6 @@ echo "Home: $ALVIS_HOME"
 echo "Binary: $TARGET_BIN/alvis"
 echo "Next steps:"
 echo "  1. alvis doctor"
-echo "  2. alvis start"
+echo "  2. export OPENAI_API_KEY=..."
+echo "  3. alvis start"
 echo "If '$HOME/.local/bin' is not on PATH, add it to your shell profile."

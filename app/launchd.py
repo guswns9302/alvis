@@ -44,6 +44,17 @@ class LaunchdManager:
         ensure_runtime_dirs(self.settings)
         daemon_log_path(self.settings).parent.mkdir(parents=True, exist_ok=True)
         python_executable = Path(sys.executable)
+        extra_env = [
+            f"    <key>ALVIS_WORKER_BACKEND</key>\n    <string>{self.settings.worker_backend}</string>\n",
+            f"    <key>ALVIS_WORKER_MODEL</key>\n    <string>{self.settings.worker_model}</string>\n",
+            f"    <key>ALVIS_WORKER_REASONING_EFFORT</key>\n    <string>{self.settings.worker_reasoning_effort}</string>\n",
+            f"    <key>ALVIS_WORKER_TIMEOUT_SECONDS</key>\n    <string>{self.settings.worker_timeout_seconds}</string>\n",
+            f"    <key>ALVIS_WORKER_MAX_TOOL_ROUNDS</key>\n    <string>{self.settings.worker_max_tool_rounds}</string>\n",
+        ]
+        if self.settings.openai_api_key:
+            extra_env.append(
+                f"    <key>ALVIS_OPENAI_API_KEY</key>\n    <string>{self.settings.openai_api_key}</string>\n"
+            )
         return f"""<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -68,7 +79,7 @@ class LaunchdManager:
     <string>{self.settings.daemon_port}</string>
     <key>ALVIS_CODEX_COMMAND</key>
     <string>{self.settings.codex_command}</string>
-  </dict>
+{''.join(extra_env)}  </dict>
   <key>RunAtLoad</key>
   <true/>
   <key>KeepAlive</key>

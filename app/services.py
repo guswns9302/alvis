@@ -85,6 +85,8 @@ class AlvisServices:
         return {
             "status": "ok",
             "codex_command": self.settings.codex_command,
+            "worker_backend": self.settings.worker_backend,
+            "worker_model": self.settings.worker_model,
             "workspace_root": str(self.settings.repo_root),
             "data_dir": str(self.settings.data_dir),
             "db_path": str(self.settings.db_path),
@@ -556,10 +558,24 @@ class AlvisServices:
             str(runner),
             "--cwd",
             cwd,
+            "--backend",
+            self.settings.worker_backend,
             "--codex-command",
             self.settings.codex_command,
+            "--worker-model",
+            self.settings.worker_model,
+            "--worker-reasoning-effort",
+            self.settings.worker_reasoning_effort,
+            "--worker-timeout-seconds",
+            str(self.settings.worker_timeout_seconds),
+            "--worker-max-tool-rounds",
+            str(self.settings.worker_max_tool_rounds),
+            "--agent-id",
+            paths["dir"].name,
             "--prompt-file",
             str(paths["prompt"]),
+            "--contract-file",
+            str(paths["contract"]),
             "--heartbeat-file",
             str(paths["heartbeat"]),
             "--stdout-file",
@@ -654,6 +670,7 @@ class AlvisServices:
     def _dispatch_task_inline(self, agent: AgentModel, contract: TaskContract, prompt: str, reason: str) -> DispatchResult:
         paths = self.codex.reset_session_files(agent.agent_id)
         paths["prompt"].write_text(prompt, encoding="utf-8")
+        paths["contract"].write_text(contract.model_dump_json(), encoding="utf-8")
         command = self._task_runner_command(paths, contract.cwd)
         try:
             subprocess.Popen(

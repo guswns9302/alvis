@@ -56,6 +56,13 @@ MESSAGE_TONES = {
 }
 
 
+def _friendly_background_error(exc: Exception) -> str:
+    message = str(exc)
+    if "GRAPH_RECURSION_LIMIT" in message or "Recursion limit" in message:
+        return "요청이 아직 실행 중입니다. 워커 결과를 수집하는 중이며 상태를 다시 확인해 주세요."
+    return message
+
+
 def _status_style(status: str | None) -> str:
     return STATUS_STYLES.get((status or "").lower(), "white")
 
@@ -433,7 +440,7 @@ def _monitor_request(
         shown_final_keys=shown_final_keys,
     )
     if handle.error is not None:
-        console.print(render_message("System", Text(str(handle.error)), tone="error"))
+        console.print(render_message("System", Text(_friendly_background_error(handle.error)), tone="error"))
 
 
 def _pending_question(status: dict[str, Any]) -> str | None:

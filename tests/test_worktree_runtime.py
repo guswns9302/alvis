@@ -67,6 +67,7 @@ def create_services(tmp_path: Path) -> AlvisServices:
         runtime_dir=tmp_path / "data" / "runtime",
         worktree_root=tmp_path / "runtime-cache",
         tmux_session_prefix=f"alvis-test-{uuid4().hex[:6]}",
+        worker_backend="command",
         codex_command="sh",
     )
     ensure_runtime_dirs(settings)
@@ -87,6 +88,7 @@ def create_codex_services(tmp_path: Path) -> AlvisServices:
         runtime_dir=tmp_path / "data" / "runtime",
         worktree_root=tmp_path / "runtime-cache",
         tmux_session_prefix=f"alvis-test-{uuid4().hex[:6]}",
+        worker_backend="command",
         codex_command="codex",
     )
     ensure_runtime_dirs(settings)
@@ -107,6 +109,7 @@ def create_fake_runtime_services(tmp_path: Path) -> AlvisServices:
         runtime_dir=tmp_path / "data" / "runtime",
         worktree_root=tmp_path / "runtime-cache",
         tmux_session_prefix=f"alvis-test-{uuid4().hex[:6]}",
+        worker_backend="command",
         codex_command=f"{REPO_ROOT / '.venv' / 'bin' / 'python'} {fake_codex}",
     )
     ensure_runtime_dirs(settings)

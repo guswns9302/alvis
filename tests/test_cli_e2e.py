@@ -29,6 +29,7 @@ def create_cli_env(tmp_path: Path) -> dict[str, str]:
             "ALVIS_RUNTIME_DIR": str(data_dir / "runtime"),
             "ALVIS_WORKTREE_ROOT": str(tmp_path / "runtime-cache"),
             "ALVIS_TMUX_PREFIX": f"alvis-e2e-{uuid4().hex[:6]}",
+            "ALVIS_WORKER_BACKEND": "command",
             "ALVIS_CODEX_COMMAND": f"{REPO_ROOT / '.venv' / 'bin' / 'python'} {fake_codex}",
         }
     )
@@ -44,6 +45,7 @@ def bootstrap_cli_services(env: dict[str, str]):
         "ALVIS_RUNTIME_DIR",
         "ALVIS_WORKTREE_ROOT",
         "ALVIS_TMUX_PREFIX",
+        "ALVIS_WORKER_BACKEND",
         "ALVIS_CODEX_COMMAND",
     ]
     previous = {key: os.environ.get(key) for key in keys}

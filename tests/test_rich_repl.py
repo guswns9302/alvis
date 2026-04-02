@@ -224,3 +224,15 @@ def test_print_prompt_context_shows_pending_question():
     assert "어느 섹션부터 수정해야 하나요?" in output
     assert "Reply" in output
     assert "╭" not in output
+
+
+def test_friendly_background_error_rewrites_graph_recursion_message():
+    exc = RuntimeError(
+        "Recursion limit of 25 reached without hitting a stop condition. "
+        "For troubleshooting, visit: https://python.langchain.com/docs/troubleshooting/errors/GRAPH_RECURSION_LIMIT"
+    )
+
+    message = rich_repl._friendly_background_error(exc)
+
+    assert "워커 결과를 수집하는 중" in message
+    assert "GRAPH_RECURSION_LIMIT" not in message

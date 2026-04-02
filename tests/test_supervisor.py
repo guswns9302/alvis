@@ -30,6 +30,7 @@ def create_services(tmp_path: Path) -> AlvisServices:
         log_dir=tmp_path / "data" / "logs",
         runtime_dir=tmp_path / "data" / "runtime",
         worktree_root=tmp_path / "runtime-cache",
+        worker_backend="command",
         codex_command=f"{REPO_ROOT / '.venv' / 'bin' / 'python'} {fake_codex}",
     )
     ensure_runtime_dirs(settings)
@@ -64,6 +65,23 @@ def test_supervisor_run_uses_compiled_graph_when_available(tmp_path):
 
     assert invoked["team_id"] == "team-graph"
     assert state["status"] == "done"
+
+
+def test_supervisor_run_passes_recursion_limit_to_compiled_graph(tmp_path):
+    services = create_services(tmp_path)
+    supervisor = Supervisor(SupervisorDeps(services=services))
+    captured = {}
+
+    class FakeGraph:
+        def invoke(self, state, config=None):
+            captured["config"] = config
+            return {**state, "status": "done"}
+
+    supervisor.build_graph = lambda entry_point="ingest_request": FakeGraph()  # type: ignore[method-assign]
+
+    supervisor.run("team-graph", "fix a bug")
+
+    assert captured["config"]["recursion_limit"] == services.settings.graph_recursion_limit
 
 
 def test_supervisor_resume_uses_checkpoint_entrypoint(tmp_path):
@@ -138,6 +156,34 @@ def test_supervisor_plans_reviewer_child_task_from_start(tmp_path):
     parent = next(task for task in tasks if task.parent_task_id is None)
 
     assert reviewer_task.parent_task_id == parent.task_id
+
+
+def test_ingest_request_marks_run_as_running_in_repository(tmp_path):
+    services = create_services(tmp_path)
+    team_id = f"running-team-{uuid4().hex[:8]}"
+    services.create_team(team_id, "implementer:builder", "reviewer:checker")
+    supervisor = Supervisor(SupervisorDeps(services=services))
+    state = {
+        "team_id": team_id,
+        "user_request": "fix a bug",
+        "tasks": [],
+        "assignments": [],
+        "active_tasks": [],
+        "completed_tasks": [],
+        "blocked_tasks": [],
+        "review_requests": [],
+        "pending_interactions": [],
+        "handoffs": [],
+        "final_output_candidate": None,
+        "final_output_ready": False,
+        "status": RunStatus.CREATED.value,
+    }
+
+    updated = supervisor.ingest_request(state)
+    run = services.get_run(updated["run_id"])
+
+    assert run is not None
+    assert run.status == RunStatus.RUNNING.value
 
 
 def test_supervisor_creates_redo_when_worker_output_is_invalid(tmp_path):
@@ -341,6 +387,7 @@ def test_dispatch_conflict_blocks_before_assignment(tmp_path):
         log_dir=tmp_path / "data" / "logs",
         runtime_dir=tmp_path / "data" / "runtime",
         worktree_root=tmp_path / "worktrees",
+        worker_backend="command",
         codex_command="sh",
     )
     ensure_runtime_dirs(settings)

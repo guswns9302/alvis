@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import importlib.util
 import os
 import subprocess
 import sys
@@ -123,6 +124,10 @@ def doctor(json_output: bool = typer.Option(False, "--json")):
         "db_path": str(settings.db_path),
         "runtime_dir": str(settings.runtime_dir),
         "daemon": daemon,
+        "worker_backend": settings.worker_backend,
+        "worker_model": settings.worker_model,
+        "sdk_package_available": importlib.util.find_spec("openai") is not None,
+        "sdk_api_key_configured": bool(settings.openai_api_key),
         "shell_codex_command": settings.codex_command,
         "shell_codex_available": subprocess.run(["which", "codex"], check=False, capture_output=True, text=True).returncode == 0,
         "install_metadata_version": install_state.get("metadata_version"),
@@ -133,7 +138,11 @@ def doctor(json_output: bool = typer.Option(False, "--json")):
     daemon_version_matches = _normalize_version(daemon_version) == _normalize_version(__version__) if daemon_version else None
     payload["daemon_version_matches"] = daemon_version_matches
     payload["install_version_matches"] = _normalize_version(payload["install_metadata_version"]) == _normalize_version(payload["installed_app_version"])
-    if not payload["shell_codex_available"]:
+    if payload["worker_backend"] == "sdk" and not payload["sdk_package_available"]:
+        next_action = "run `alvis upgrade` to install SDK dependencies"
+    elif payload["worker_backend"] == "sdk" and not payload["sdk_api_key_configured"]:
+        next_action = "export OPENAI_API_KEY and rerun `alvis doctor`"
+    elif payload["worker_backend"] != "sdk" and not payload["shell_codex_available"]:
         next_action = "install codex and rerun `alvis doctor`"
     elif payload["install_drift_detected"]:
         next_action = "run `alvis upgrade` to repair the installed app state"
@@ -156,6 +165,10 @@ def doctor(json_output: bool = typer.Option(False, "--json")):
                 f"db_path: {data['db_path']}",
                 f"runtime_dir: {data['runtime_dir']}",
                 f"daemon: {data['daemon'].get('status', 'unknown')}",
+                f"worker backend: {data.get('worker_backend') or '-'}",
+                f"worker model: {data.get('worker_model') or '-'}",
+                f"sdk package: {'ok' if data.get('sdk_package_available') else 'missing'}",
+                f"sdk api key: {'ok' if data.get('sdk_api_key_configured') else 'missing'}",
                 f"shell codex_command: {data.get('shell_codex_command') or '-'}",
                 f"shell codex: {'ok' if data['shell_codex_available'] else 'missing'}",
                 f"install metadata version: {data.get('install_metadata_version') or '-'}",
@@ -165,6 +178,8 @@ def doctor(json_output: bool = typer.Option(False, "--json")):
                 else "install drift: none",
                 f"daemon version: {data['daemon'].get('version') or '-'}",
                 f"daemon codex_command: {data['daemon'].get('daemon_codex_command') or '-'}",
+                f"daemon worker backend: {data['daemon'].get('daemon_worker_backend') or '-'}",
+                f"daemon worker model: {data['daemon'].get('daemon_worker_model') or '-'}",
                 f"daemon workspace: {data['daemon'].get('daemon_workspace_root') or '-'}",
                 f"daemon data_dir: {data['daemon'].get('daemon_data_dir') or '-'}",
                 f"daemon db_path: {data['daemon'].get('daemon_db_path') or '-'}",

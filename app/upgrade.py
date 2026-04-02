@@ -54,7 +54,14 @@ def _write_wrapper(settings: Settings, *, codex_command: str | None = None) -> P
     wrapper = install_wrapper_path(settings)
     exports = [
         f'export ALVIS_HOME="{settings.app_home}"\n',
+        f'export ALVIS_WORKER_BACKEND="{settings.worker_backend}"\n',
+        f'export ALVIS_WORKER_MODEL="{settings.worker_model}"\n',
+        f'export ALVIS_WORKER_REASONING_EFFORT="{settings.worker_reasoning_effort}"\n',
+        f'export ALVIS_WORKER_TIMEOUT_SECONDS="{settings.worker_timeout_seconds}"\n',
+        f'export ALVIS_WORKER_MAX_TOOL_ROUNDS="{settings.worker_max_tool_rounds}"\n',
     ]
+    if settings.openai_api_key:
+        exports.append(f'export ALVIS_OPENAI_API_KEY="{settings.openai_api_key}"\n')
     if codex_command or settings.codex_command:
         exports.append(f'export ALVIS_CODEX_COMMAND="{codex_command or settings.codex_command}"\n')
     wrapper.write_text(
@@ -80,6 +87,26 @@ def _persist_metadata(settings: Settings, *, version: str, tarball_url: str) -> 
             indent=2,
         )
     )
+
+
+def _verify_sdk_installation(settings: Settings) -> dict:
+    python_bin = install_venv_dir(settings) / "bin" / "python"
+    if not python_bin.exists():
+        return {
+            "sdk_installed": False,
+            "sdk_import_error": "venv python entrypoint is missing",
+        }
+    result = subprocess.run(
+        [str(python_bin), "-c", "import openai"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    error = (result.stderr or result.stdout or "").strip() or None
+    return {
+        "sdk_installed": result.returncode == 0,
+        "sdk_import_error": None if result.returncode == 0 else error,
+    }
 
 
 def _verify_daemon_version(settings: Settings, target_version: str) -> dict:
@@ -149,6 +176,7 @@ def _build_result(
     install_state: dict,
     metadata_updated: bool,
     daemon_result: dict,
+    sdk_result: dict,
 ) -> dict:
     metadata_version = install_state.get("metadata_version")
     installed_app_version = install_state.get("installed_app_version")
@@ -160,6 +188,7 @@ def _build_result(
         "installed_app_version": installed_app_version,
         "install_drift_detected": _normalize_version(metadata_version) != _normalize_version(installed_app_version),
         "metadata_updated": metadata_updated,
+        **sdk_result,
         **daemon_result,
     }
 
@@ -172,14 +201,19 @@ def perform_upgrade(settings: Settings, version: str | None = None) -> dict:
     state = inspect_installation_state(settings)
     current = state.get("installed_app_version") or state.get("metadata_version") or __version__
     daemon_result = _daemon_result(settings, tag, restart=False)
+    sdk_result = _verify_sdk_installation(settings) if state.get("venv_entrypoint_exists") else {
+        "sdk_installed": False,
+        "sdk_import_error": "venv entrypoint is missing",
+    }
 
     installed_matches = _normalize_version(state.get("installed_app_version")) == _normalize_version(tag)
     wrapper_ready = state.get("wrapper_exists", False)
     venv_ready = state.get("venv_entrypoint_exists", False)
     daemon_matches = daemon_result.get("daemon_version_matches_target") is True or daemon_result.get("daemon_version_matches_target") is None and not shutil.which("launchctl")
     metadata_matches = _normalize_version(state.get("metadata_version")) == _normalize_version(tag)
+    sdk_ready = sdk_result.get("sdk_installed") is True
 
-    if installed_matches and wrapper_ready and venv_ready and daemon_matches:
+    if installed_matches and wrapper_ready and venv_ready and daemon_matches and sdk_ready:
         metadata_updated = False
         if not metadata_matches:
             _persist_metadata(settings, version=tag, tarball_url=tarball_url)
@@ -192,6 +226,7 @@ def perform_upgrade(settings: Settings, version: str | None = None) -> dict:
             install_state=state,
             metadata_updated=metadata_updated,
             daemon_result=daemon_result,
+            sdk_result=sdk_result,
         )
 
     with tempfile.TemporaryDirectory() as temp_dir:
@@ -207,6 +242,17 @@ def perform_upgrade(settings: Settings, version: str | None = None) -> dict:
 
     daemon_result = _daemon_result(settings, tag, restart=True)
     state = inspect_installation_state(settings)
+    sdk_result = _verify_sdk_installation(settings)
+    if sdk_result.get("sdk_installed") is False:
+        return _build_result(
+            status="sdk_missing",
+            current_version=current,
+            target_version=tag,
+            install_state=state,
+            metadata_updated=False,
+            daemon_result=daemon_result,
+            sdk_result=sdk_result,
+        )
     if daemon_result.get("daemon_version_matches_target") is False:
         return _build_result(
             status="daemon_mismatch",
@@ -215,6 +261,7 @@ def perform_upgrade(settings: Settings, version: str | None = None) -> dict:
             install_state=state,
             metadata_updated=False,
             daemon_result=daemon_result,
+            sdk_result=sdk_result,
         )
     return _build_result(
         status="upgraded",
@@ -223,6 +270,7 @@ def perform_upgrade(settings: Settings, version: str | None = None) -> dict:
         install_state=state,
         metadata_updated=False,
         daemon_result=daemon_result,
+        sdk_result=sdk_result,
     )
 
 
@@ -244,7 +292,10 @@ def install_from_source(
     _install_from_source(settings, source_dir, version=version, tarball_url=tarball_url, codex_command=codex_command)
     daemon_result = _daemon_result(settings, version, restart=True)
     state = inspect_installation_state(settings)
+    sdk_result = _verify_sdk_installation(settings)
     status = "installed"
+    if sdk_result.get("sdk_installed") is False:
+        status = "sdk_missing"
     if daemon_result.get("daemon_version_matches_target") is False:
         status = "daemon_mismatch"
     return _build_result(
@@ -254,4 +305,5 @@ def install_from_source(
         install_state=state,
         metadata_updated=False,
         daemon_result=daemon_result,
+        sdk_result=sdk_result,
     )

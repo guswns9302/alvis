@@ -30,6 +30,14 @@ class CodexAdapter:
             "Codex 비대화형 실행이 현재 macOS 환경과의 호환성 문제로 종료되었습니다.",
         ),
         (
+            re.compile(r"OpenAI Python SDK is not installed", re.IGNORECASE),
+            "OpenAI Python SDK가 설치되어 있지 않아 SDK worker를 시작할 수 없습니다.",
+        ),
+        (
+            re.compile(r"OPENAI_API_KEY", re.IGNORECASE),
+            "OpenAI API 인증 정보가 없어 SDK worker를 시작할 수 없습니다.",
+        ),
+        (
             re.compile(r"npm error code EACCES", re.IGNORECASE),
             "Codex가 전역 npm 업데이트를 시도했지만 권한 오류(EACCES)로 종료되었습니다.",
         ),
@@ -100,13 +108,14 @@ class CodexAdapter:
             "stderr": agent_dir / "stderr.log",
             "inbox": agent_dir / "prompt_inbox.jsonl",
             "prompt": agent_dir / "task_prompt.txt",
+            "contract": agent_dir / "task_contract.json",
             "last_message": agent_dir / "last_message.txt",
             "schema_output": agent_dir / "task_output.json",
         }
 
     def reset_session_files(self, agent_id: str) -> dict[str, Path]:
         paths = self.session_paths(agent_id)
-        for key in ("heartbeat", "state", "stdout", "stderr", "inbox", "prompt", "last_message", "schema_output"):
+        for key in ("heartbeat", "state", "stdout", "stderr", "inbox", "prompt", "contract", "last_message", "schema_output"):
             paths[key].write_text("")
         return paths
 

@@ -1,11 +1,13 @@
 # Alvis
 
-`alvis` is a CLI-first multi-worker orchestrator backed by `LangGraph`, `Codex CLI`, and a local workspace-scoped SQLite state store.
+`alvis` is a CLI-first multi-worker orchestrator backed by `LangGraph`, the OpenAI Python SDK, and a local workspace-scoped SQLite state store.
 
 ## Requirements
 
 - Python 3.12+
-- `codex` CLI on `PATH`
+- `OPENAI_API_KEY`
+
+Legacy `codex` CLI worker execution is still available as a fallback backend, but the default worker path uses the OpenAI Python SDK.
 
 ## Install
 
@@ -54,7 +56,8 @@ alvis clean
 ## Runtime Model
 
 - `LangGraph` is the orchestration control plane
-- worker tasks run through non-interactive `codex exec`
+- worker tasks run through an SDK-backed Python worker runtime
+- the default worker runtime uses OpenAI Responses API function-calling with a local tool bridge
 - worker outputs are schema-first structured results
 - `SQLite` stores teams, runs, tasks, interactions, checkpoints, and events
 - runtime files under the workspace data directory track heartbeat, process state, stdout, stderr, prompt, and structured output artifacts
@@ -77,6 +80,7 @@ alvis upgrade --version v0.2.1
 ```
 
 The upgrade path reinstalls the package, restarts the daemon, and verifies daemon version alignment with the CLI version.
+Use `alvis doctor` to confirm SDK package readiness, API key configuration, and installed-state alignment.
 
 Recommended verification after upgrade:
 

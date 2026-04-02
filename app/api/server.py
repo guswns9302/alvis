@@ -65,6 +65,8 @@ def create_app() -> FastAPI:
             "status": "ok",
             "version": __version__,
             "daemon_codex_command": diagnostics["codex_command"],
+            "daemon_worker_backend": diagnostics.get("worker_backend"),
+            "daemon_worker_model": diagnostics.get("worker_model"),
             "daemon_workspace_root": diagnostics["workspace_root"],
             "daemon_data_dir": diagnostics["data_dir"],
             "daemon_db_path": diagnostics["db_path"],
