@@ -8,7 +8,6 @@ from typing import Any
 from rich.console import Console, Group, RenderableType
 from rich.padding import Padding
 from rich.text import Text
-from rich.table import Table
 
 IMPORTANT_EVENT_TYPES = {
     "run.created",
@@ -21,7 +20,6 @@ IMPORTANT_EVENT_TYPES = {
     "review.requested",
     "review.approved",
     "review.rejected",
-    "interaction.created",
     "interaction.resolved",
     "leader.output.ready",
     "error.raised",
@@ -103,19 +101,19 @@ def render_worker_strip(status: dict[str, Any]) -> RenderableType:
     workers = [agent for agent in status.get("agents", []) if agent.get("role") != "leader"]
     if not workers:
         return Text("workers: -", style="dim")
-    segments: list[Text] = []
-    for agent in workers:
+    segments: list[Text] = [Text("workers ", style="dim")]
+    for index, agent in enumerate(workers):
         worker_name = str(agent.get("role_alias") or agent.get("role") or "-")
         worker_status = str(agent.get("status") or "-")
         summary = _worker_task_summary(agent, status)
-        if segments:
+        if index:
             segments.append(Text("  |  ", style="dim"))
         segments.append(Text(worker_name, style="bold"))
         segments.append(Text(" "))
         segments.append(Text(worker_status, style=_status_style(worker_status)))
-        segments.append(Text(" "))
+        segments.append(Text(" — ", style="dim"))
         segments.append(Text(summary, style="white"))
-    return Group(Text("Workers", style="bold green"), Group(*segments))
+    return Group(*segments)
 
 
 def render_session_header(team_id: str, status: dict[str, Any]) -> RenderableType:
@@ -123,14 +121,17 @@ def render_session_header(team_id: str, status: dict[str, Any]) -> RenderableTyp
     run_id = latest_run.get("run_id") or "-"
     run_status = latest_run.get("status") or "-"
     request = _truncate(latest_run.get("request"), length=72)
-    header = Table.grid(expand=True)
-    header.add_column(ratio=1)
-    header.add_column(ratio=5)
-    header.add_row("Team", team_id)
-    header.add_row("Run", str(run_id))
-    header.add_row("State", Text(str(run_status), style=_status_style(str(run_status))))
-    header.add_row("Request", request)
-    return Group(Text(f"Alvis · {team_id}", style="bold bright_blue"), header)
+    return Text.assemble(
+        ("Alvis", "bold bright_blue"),
+        ("  "),
+        (team_id, "bold"),
+        ("  |  ", "dim"),
+        (str(run_status), _status_style(str(run_status))),
+        ("  |  ", "dim"),
+        (str(run_id), "white"),
+        ("  |  ", "dim"),
+        (request, "dim"),
+    )
 
 
 def _text_body(body: RenderableType, *, tone: str) -> RenderableType:
@@ -205,6 +206,8 @@ def _worker_voice_message(event: dict[str, Any], status: dict[str, Any]) -> str:
     if event_type == "leader.output.ready":
         return "최종 응답 초안을 전달했습니다."
     if event_type == "interaction.created":
+        if payload.get("kind") == "intent_clarification" or payload.get("interaction_kind") == "intent_clarification":
+            return "빠른 의도 확인이 필요합니다."
         if payload.get("interaction_kind") == "report_blocker":
             return "리더 입력이 필요합니다."
         return summary
@@ -370,15 +373,30 @@ def _sync_transcript(
 def _pending_banner(status: dict[str, Any]) -> str | None:
     pending = status.get("pending_interactions") or []
     if pending:
-        return str(next((item.get("message") for item in pending if item.get("message")), "워커가 추가 입력을 기다리고 있습니다."))
+        for item in pending:
+            if item.get("kind") == "intent_clarification" and item.get("message"):
+                return f"Alvis needs a quick clarification: {item['message']}"
+        for item in pending:
+            if item.get("message"):
+                return f"Executor needs more input: {item['message']}"
+        return "워커가 추가 입력을 기다리고 있습니다."
     return None
 
 
-def _print_prompt_context(console: Console, *, status: dict[str, Any]) -> None:
-    console.print(render_worker_strip(status))
+def _print_prompt_context(
+    console: Console,
+    *,
+    status: dict[str, Any],
+    last_worker_signature: tuple[tuple[str, str, str], ...] | None,
+    last_banner: str | None,
+) -> tuple[tuple[str, str, str], str | None]:
+    worker_signature = _worker_strip_signature(status)
+    if worker_signature != last_worker_signature:
+        console.print(render_worker_strip(status))
     question = _pending_banner(status)
-    if question:
-        console.print(render_message("Reply", Text(question), tone="warning"))
+    if question and question != last_banner:
+        console.print(Text(question, style="yellow"))
+    return worker_signature, question
 
 
 def _start_background_action(action) -> RequestHandle:
@@ -463,6 +481,8 @@ def launch_repl(*, team_id: str, backend: ReplBackend) -> int:
     console.print(render_message("System", Text("세션이 준비되었습니다. 요청을 입력하면 결과가 아래로 계속 쌓입니다."), tone="system"))
     console.print(Text("/status  /logs  /clean  /quit  /shutdown", style="cyan"))
     console.print(render_worker_strip(status))
+    last_prompt_worker_signature = _worker_strip_signature(status)
+    last_prompt_banner = _pending_banner(status)
     _sync_transcript(
         console,
         status=status,
@@ -485,7 +505,12 @@ def launch_repl(*, team_id: str, backend: ReplBackend) -> int:
             seen_worker_output_keys=seen_worker_output_keys,
             shown_final_keys=shown_final_keys,
         )
-        _print_prompt_context(console, status=status)
+        last_prompt_worker_signature, last_prompt_banner = _print_prompt_context(
+            console,
+            status=status,
+            last_worker_signature=last_prompt_worker_signature,
+            last_banner=last_prompt_banner,
+        )
 
         command = console.input("[bold cyan]> [/] ").strip()
         if not command:
@@ -524,3 +549,6 @@ def launch_repl(*, team_id: str, backend: ReplBackend) -> int:
             seen_worker_output_keys=seen_worker_output_keys,
             shown_final_keys=shown_final_keys,
         )
+        latest_status = backend.status(team_id)
+        last_prompt_worker_signature = _worker_strip_signature(latest_status)
+        last_prompt_banner = _pending_banner(latest_status)

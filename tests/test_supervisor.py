@@ -397,7 +397,7 @@ def test_dispatch_conflict_blocks_before_assignment(tmp_path):
     services.create_team(team_id, "implementer:builder", "reviewer:checker")
 
     supervisor = Supervisor(SupervisorDeps(services=services))
-    supervisor.create_plan = lambda request, workers: [  # type: ignore[method-assign]
+    supervisor.create_plan = lambda request, workers, intent: [  # type: ignore[method-assign]
         {
             "title": "Implement changes",
             "goal": request,
@@ -412,7 +412,7 @@ def test_dispatch_conflict_blocks_before_assignment(tmp_path):
         "scope_conflicts": [{"paths": ["shared.py"], "owners": [{"agent_id": f"{team_id}-worker-1", "task_id": "existing-task", "path": "/tmp"}]}],
     }
 
-    state = supervisor.run(team_id, "conflict run")
+    state = supervisor.run(team_id, "fix conflict run")
     created_task_id = state["tasks"][0]["task_id"]
     created_task = services.get_task(created_task_id)
     events = services.list_events(team_id=team_id, run_id=state["run_id"])
@@ -499,7 +499,7 @@ def test_supervisor_stops_at_leader_wait_and_keeps_checkpoint(tmp_path):
 
     services.dispatch_task = needs_input_dispatch  # type: ignore[method-assign]
 
-    state = supervisor.run(team_id, "need clarification")
+    state = supervisor.run(team_id, "fix README formatting")
     checkpoint = services.load_checkpoint(state["run_id"])
 
     assert state["status"] == RunStatus.RUNNING.value
@@ -507,6 +507,32 @@ def test_supervisor_stops_at_leader_wait_and_keeps_checkpoint(tmp_path):
     assert "waiting for leader input" in state["final_response"].lower()
     assert checkpoint is not None
     assert checkpoint.next_node == "route_interactions"
+
+
+def test_supervisor_classifies_general_question_as_knowledge(tmp_path):
+    services = create_services(tmp_path)
+    team_id = f"knowledge-route-{uuid4().hex[:8]}"
+    services.create_team(team_id, "implementer:builder", "reviewer:checker")
+
+    state = Supervisor(SupervisorDeps(services=services)).run(team_id, "dns가 뭐지?")
+    tasks = services.list_run_tasks(state["run_id"])
+
+    assert state["intent"] == "knowledge"
+    assert tasks[0].title == "Research and draft findings"
+
+
+def test_supervisor_classifies_ambiguous_request_as_clarification(tmp_path):
+    services = create_services(tmp_path)
+    team_id = f"clarify-route-{uuid4().hex[:8]}"
+    services.create_team(team_id, "implementer:builder", "reviewer:checker")
+
+    state = Supervisor(SupervisorDeps(services=services)).run(team_id, "hello")
+
+    assert state["intent"] == "clarification"
+    assert not services.list_run_tasks(state["run_id"])
+    assert state["pending_interactions"]
+    assert state["pending_interactions"][0]["kind"] == "intent_clarification"
+    assert "quick clarification" in state["final_response"].lower()
 
 
 def test_supervisor_runtime_failure_does_not_route_to_leader_or_redo(tmp_path):

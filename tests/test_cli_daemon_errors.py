@@ -241,8 +241,8 @@ def test_doctor_warns_when_codex_sdk_package_is_missing(monkeypatch, tmp_path):
         cli_module,
         "inspect_installation_state",
         lambda settings: {
-            "metadata_version": "v0.2.9",
-            "installed_app_version": "0.2.9",
+            "metadata_version": "v0.2.10",
+            "installed_app_version": "0.2.10",
             "app_dir_exists": True,
             "wrapper_exists": True,
             "venv_entrypoint_exists": True,
@@ -277,8 +277,8 @@ def test_doctor_recommends_auth_set_key_when_key_is_missing(monkeypatch, tmp_pat
         cli_module,
         "inspect_installation_state",
         lambda settings: {
-            "metadata_version": "v0.2.9",
-            "installed_app_version": "0.2.9",
+            "metadata_version": "v0.2.10",
+            "installed_app_version": "0.2.10",
             "app_dir_exists": True,
             "wrapper_exists": True,
             "venv_entrypoint_exists": True,

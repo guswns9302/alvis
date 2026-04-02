@@ -39,6 +39,7 @@ class AlvisRunState(TypedDict, total=False):
     run_id: str
     team_id: str
     user_request: str
+    intent: str | None
     tasks: list[TaskState]
     assignments: list[dict]
     active_tasks: list[TaskState]

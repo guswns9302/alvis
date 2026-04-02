@@ -847,6 +847,37 @@ class AlvisServices:
             self.resolve_interaction(item.interaction_id, payload=guidance_payload)
             resolved_ids.append(item.interaction_id)
         followup_task_id = None
+        if source_task is None and interaction.kind == "intent_clarification":
+            original_request = (interaction.payload or {}).get("original_request") or latest_run.request
+            combined_request = f"{original_request}\nUser clarification: {answer}"
+            with session_scope(self.session_factory) as session:
+                repo = Repository(session)
+                run = repo.get_run(latest_run.run_id)
+                if run is not None:
+                    run.request = combined_request
+                    session.add(run)
+                    session.flush()
+            checkpoint = self.load_checkpoint(latest_run.run_id)
+            if checkpoint is not None:
+                updated_state = dict(checkpoint.state or {})
+                updated_state["user_request"] = combined_request
+                updated_state["intent"] = None
+                updated_state["pending_interactions"] = []
+                updated_state["leader_waiting"] = False
+                updated_state["waiting_for_leader_summary"] = None
+                self.save_checkpoint(
+                    run_id=latest_run.run_id,
+                    thread_id=latest_run.run_id,
+                    next_node="classify_intent",
+                    state=updated_state,
+                )
+            return {
+                "run_id": latest_run.run_id,
+                "interaction_id": interaction.interaction_id,
+                "resolved_interaction_ids": resolved_ids,
+                "followup_task_id": None,
+                "leader_answer": answer,
+            }
         if source_task is not None:
             followup_goal = (
                 f"Continue the original task with leader guidance.\n"

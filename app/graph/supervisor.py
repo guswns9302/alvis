@@ -24,7 +24,8 @@ class SupervisorDeps:
 
 class Supervisor:
     NODE_ORDER = {
-        "ingest_request": "plan_tasks",
+        "ingest_request": "classify_intent",
+        "classify_intent": "plan_tasks",
         "plan_tasks": "select_agents",
         "select_agents": "dispatch_tasks",
         "dispatch_tasks": "wait_for_updates",
@@ -56,8 +57,45 @@ class Supervisor:
                     paths.append(token)
         return paths or ["."]
 
-    def _plan_template(self, request: str) -> tuple[str, str, str]:
+    def _classify_intent(self, request: str) -> str:
+        lowered = request.lower().strip()
+        implementation_verbs = (
+            "fix", "implement", "add", "update", "change", "modify", "refactor",
+            "write", "create", "edit", "patch", "고쳐", "수정", "추가", "구현",
+            "리팩토링", "변경", "작성", "만들", "테스트 추가",
+        )
+        knowledge_markers = (
+            "what", "why", "how", "difference", "compare", "versus", " vs ",
+            "analysis", "explain", "tell me", "what is", "dns", "차이", "비교",
+            "분석", "설명", "뭐", "무엇", "왜", "어떻게", "알려", "란", "인가",
+            "특징",
+        )
+        ambiguity_markers = (
+            "안 돼", "안돼", "이상해", "weird", "broken", "문제", "오류", "에러",
+            "issue", "problem", "fail", "failed",
+        )
+        has_path = any("/" in token or "." in token for token in lowered.split())
+        if any(keyword in lowered for keyword in implementation_verbs):
+            return "implementation"
+        if any(keyword in lowered for keyword in knowledge_markers) or request.strip().endswith("?"):
+            return "knowledge"
+        if any(keyword in lowered for keyword in ambiguity_markers):
+            return "clarification"
+        if len(lowered.split()) <= 2:
+            return "clarification"
+        return "implementation" if has_path else "clarification"
+
+    def _clarification_prompt(self, request: str) -> str:
+        return "이 요청은 설명이 필요한가요, 아니면 실제 코드 수정이 필요한가요?"
+
+    def _plan_template(self, request: str, intent: str) -> tuple[str, str, str]:
         lowered = request.lower()
+        if intent == "knowledge":
+            return (
+                "Research and draft findings",
+                f"Research the request and draft a clear explanatory answer for: {request}",
+                "Validate the findings, simplify the explanation, and prepare the final answer.",
+            )
         if any(keyword in lowered for keyword in ("compare", "versus", " vs ", "analysis", "analyze", "report", "비교", "차이", "분석", "보고서")):
             return (
                 "Research and draft findings",
@@ -76,9 +114,9 @@ class Supervisor:
             "Validate the implementation output and prepare the final answer.",
         )
 
-    def create_plan(self, request: str, workers: list[dict[str, str]]) -> list[dict[str, Any]]:
+    def create_plan(self, request: str, workers: list[dict[str, str]], intent: str) -> list[dict[str, Any]]:
         primary = next((worker for worker in workers if worker["role"] != "reviewer"), workers[0])
-        primary_title, primary_goal, reviewer_goal = self._plan_template(request)
+        primary_title, primary_goal, reviewer_goal = self._plan_template(request, intent)
         plan = [
             {
                 "title": primary_title,
@@ -109,6 +147,7 @@ class Supervisor:
             return self._compiled_graphs[entry_point]
         graph = StateGraph(AlvisRunState)
         graph.add_node("ingest_request", self.ingest_request)
+        graph.add_node("classify_intent", self.classify_intent)
         graph.add_node("plan_tasks", self.plan_tasks)
         graph.add_node("select_agents", self.select_agents)
         graph.add_node("dispatch_tasks", self.dispatch_tasks)
@@ -116,7 +155,8 @@ class Supervisor:
         graph.add_node("evaluate_progress", self.evaluate_progress)
         graph.add_node("route_interactions", self.route_interactions)
         graph.add_node("synthesize_result", self.synthesize_result)
-        graph.add_edge("ingest_request", "plan_tasks")
+        graph.add_edge("ingest_request", "classify_intent")
+        graph.add_edge("classify_intent", "plan_tasks")
         graph.add_edge("plan_tasks", "select_agents")
         graph.add_edge("select_agents", "dispatch_tasks")
         graph.add_edge("dispatch_tasks", "wait_for_updates")
@@ -157,6 +197,7 @@ class Supervisor:
             handoffs=[],
             final_output_candidate=None,
             final_output_ready=False,
+            intent=None,
             status=RunStatus.CREATED.value,
         )
         graph = self.build_graph("ingest_request")
@@ -206,6 +247,9 @@ class Supervisor:
                 "target_role_alias": item.target_role_alias,
                 "kind": item.kind,
                 "status": item.status,
+                "message": (item.payload or {}).get("message")
+                or (item.payload or {}).get("detail")
+                or (item.payload or {}).get("summary"),
                 "payload": item.payload,
             }
             for item in self.deps.services.list_interactions(run_id=state["run_id"])
@@ -512,14 +556,41 @@ class Supervisor:
         self._save_linear_checkpoint(state, "ingest_request")
         return state
 
+    def classify_intent(self, state: AlvisRunState) -> AlvisRunState:
+        state["intent"] = self._classify_intent(state["user_request"])
+        self._save_linear_checkpoint(state, "classify_intent")
+        return state
+
     def plan_tasks(self, state: AlvisRunState) -> AlvisRunState:
         workers = [
             {"role": agent.role, "role_alias": agent.role_alias or agent.role}
             for agent in self.deps.services.list_worker_agents(state["team_id"])
         ]
+        if state.get("intent") == "clarification":
+            run_id = state["run_id"]
+            existing = self.deps.services.summarize_pending_interactions(run_id)
+            if not any(item.get("kind") == "intent_clarification" for item in existing):
+                self.deps.services.create_interaction(
+                    run_id=run_id,
+                    team_id=state["team_id"],
+                    kind="intent_clarification",
+                    payload={
+                        "kind": "intent_clarification",
+                        "message": self._clarification_prompt(state["user_request"]),
+                        "original_request": state["user_request"],
+                        "target_role_alias": "leader",
+                    },
+                    source_agent_id=None,
+                    target_role_alias="leader",
+                    task_id=None,
+                )
+            state["tasks"] = []
+            state["pending_interactions"] = self.deps.services.summarize_pending_interactions(run_id)
+            self._save_linear_checkpoint(state, "plan_tasks")
+            return state
         tasks = []
         created_tasks = []
-        for task_spec in self.create_plan(state["user_request"], workers):
+        for task_spec in self.create_plan(state["user_request"], workers, state.get("intent") or "implementation"):
             parent_task_id = None
             parent_index = task_spec.get("parent_index")
             if parent_index is not None and 0 <= parent_index < len(created_tasks):
@@ -561,6 +632,10 @@ class Supervisor:
         return state
 
     def select_agents(self, state: AlvisRunState) -> AlvisRunState:
+        if state.get("intent") == "clarification":
+            state["assignments"] = []
+            self._save_linear_checkpoint(state, "select_agents")
+            return state
         workers = self.deps.services.list_worker_agents(state["team_id"])
         if not workers:
             raise ValueError(f"team {state['team_id']} has no worker agents")
@@ -584,6 +659,9 @@ class Supervisor:
         return state
 
     def dispatch_tasks(self, state: AlvisRunState) -> AlvisRunState:
+        if state.get("intent") == "clarification":
+            self._save_linear_checkpoint(state, "dispatch_tasks")
+            return state
         for assignment in state["assignments"]:
             task = self.deps.services.get_task(assignment["task_id"])
             agent = self.deps.services.get_agent(assignment["agent_id"])
@@ -1059,8 +1137,18 @@ class Supervisor:
         state["pending_interactions"] = pending
         if pending:
             state["leader_waiting"] = True
-            state["waiting_for_leader_summary"] = next((item.get("message") for item in pending if item.get("message")), None)
+            state["waiting_for_leader_summary"] = next(
+                (
+                    item.get("message")
+                    or (item.get("payload") or {}).get("message")
+                    for item in pending
+                    if item.get("message") or (item.get("payload") or {}).get("message")
+                ),
+                None,
+            )
             for item in pending:
+                if item.get("kind") == "intent_clarification":
+                    continue
                 self.deps.services.append_event(
                     team_id=state["team_id"],
                     run_id=state["run_id"],
@@ -1075,8 +1163,30 @@ class Supervisor:
     def synthesize_result(self, state: AlvisRunState) -> AlvisRunState:
         state = self._refresh_state_from_db(state)
         if state.get("pending_interactions"):
-            question = next((item.get("message") for item in state["pending_interactions"] if item.get("message")), None)
-            final = f"Run is waiting for leader input. {question or 'Answer the pending worker question to continue.'}"
+            pending = state["pending_interactions"]
+            intent_question = next(
+                (
+                    item.get("message")
+                    or (item.get("payload") or {}).get("message")
+                    for item in pending
+                    if item.get("kind") == "intent_clarification"
+                    and (item.get("message") or (item.get("payload") or {}).get("message"))
+                ),
+                None,
+            )
+            question = intent_question or next(
+                (
+                    item.get("message")
+                    or (item.get("payload") or {}).get("message")
+                    for item in pending
+                    if item.get("message") or (item.get("payload") or {}).get("message")
+                ),
+                None,
+            )
+            if intent_question:
+                final = f"Before I continue, I need one quick clarification. {intent_question}"
+            else:
+                final = f"Run is waiting for leader input. {question or 'Answer the pending worker question to continue.'}"
             status = RunStatus.RUNNING
         elif state["active_tasks"]:
             active_titles = ", ".join(task["title"] for task in state["active_tasks"])
