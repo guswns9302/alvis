@@ -357,6 +357,50 @@ def test_refresh_agent_runtime_surfaces_background_failure_reason(tmp_path):
     assert services.list_interactions(run_id=run.run_id) == []
 
 
+def test_dispatch_task_passes_saved_codex_api_key_to_runner(tmp_path, monkeypatch):
+    repo_root = tmp_path / "project"
+    repo_root.mkdir(parents=True, exist_ok=True)
+    (repo_root / "README.md").write_text("shared root")
+    settings = Settings(
+        repo_root=repo_root,
+        data_dir=tmp_path / "data",
+        db_path=tmp_path / "data" / "alvis.db",
+        log_dir=tmp_path / "data" / "logs",
+        runtime_dir=tmp_path / "data" / "runtime",
+        worktree_root=tmp_path / "runtime-cache",
+        tmux_session_prefix=f"alvis-test-{uuid4().hex[:6]}",
+        worker_backend="codex-sdk",
+        worker_model="gpt-5.4",
+        codex_api_key="saved-codex-key",
+        codex_command="codex",
+    )
+    ensure_runtime_dirs(settings)
+    init_db(settings)
+    services = AlvisServices(settings=settings, session_factory=create_session_factory(settings))
+    team_id = f"sdk-env-{uuid4().hex[:6]}"
+    agent_id = f"{team_id}-worker-1"
+    services.create_team(team_id, "implementer:builder", "reviewer:checker")
+    run = services.create_run(team_id, "hello")
+    task = services.create_task(team_id, run.run_id, "Implement", "hello", target_role_alias="builder", owned_paths=["README.md"])
+    services.assign_task(task.task_id, agent_id)
+    agent = services.get_agent(agent_id)
+    captured: dict[str, object] = {}
+
+    def fake_popen(command, **kwargs):
+        captured["command"] = command
+        captured["env"] = kwargs["env"]
+        return object()
+
+    monkeypatch.setattr(subprocess, "Popen", fake_popen)
+
+    dispatch = services.dispatch_task(agent_id, services.build_task_contract(task, agent))
+
+    assert dispatch.ok is True
+    assert captured["env"]["ALVIS_CODEX_API_KEY"] == "saved-codex-key"
+    assert captured["env"]["CODEX_API_KEY"] == "saved-codex-key"
+    assert captured["env"]["ALVIS_HOME"] == str(settings.app_home)
+
+
 def test_codex_runtime_health_extracts_permission_error_summary(tmp_path):
     adapter = CodexAdapter(
         codex_command="codex",

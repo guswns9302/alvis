@@ -93,6 +93,7 @@ def test_doctor_prints_daemon_runtime_details(monkeypatch, tmp_path):
             "sdk_import_error": None,
         },
     )
+    monkeypatch.setattr(cli_module, "load_saved_codex_api_key", lambda app_home: None)
     monkeypatch.setattr(cli_module.subprocess, "run", lambda *args, **kwargs: SimpleNamespace(returncode=0))
 
     result = runner.invoke(cli_module.app, ["doctor"])
@@ -135,6 +136,7 @@ def test_doctor_warns_when_install_state_drifts(monkeypatch, tmp_path):
             "sdk_import_error": None,
         },
     )
+    monkeypatch.setattr(cli_module, "load_saved_codex_api_key", lambda app_home: None)
     monkeypatch.setattr(cli_module.subprocess, "run", lambda *args, **kwargs: SimpleNamespace(returncode=0))
 
     result = runner.invoke(cli_module.app, ["doctor"])
@@ -220,6 +222,7 @@ def test_doctor_warns_when_daemon_version_mismatches(monkeypatch, tmp_path):
             "sdk_import_error": None,
         },
     )
+    monkeypatch.setattr(cli_module, "load_saved_codex_api_key", lambda app_home: None)
     monkeypatch.setattr(cli_module.subprocess, "run", lambda *args, **kwargs: SimpleNamespace(returncode=0))
 
     result = runner.invoke(cli_module.app, ["doctor"])
@@ -238,8 +241,8 @@ def test_doctor_warns_when_codex_sdk_package_is_missing(monkeypatch, tmp_path):
         cli_module,
         "inspect_installation_state",
         lambda settings: {
-            "metadata_version": "v0.2.8",
-            "installed_app_version": "0.2.8",
+            "metadata_version": "v0.2.9",
+            "installed_app_version": "0.2.9",
             "app_dir_exists": True,
             "wrapper_exists": True,
             "venv_entrypoint_exists": True,
@@ -255,6 +258,7 @@ def test_doctor_warns_when_codex_sdk_package_is_missing(monkeypatch, tmp_path):
             "sdk_import_error": "Cannot find package '@openai/codex-sdk'",
         },
     )
+    monkeypatch.setattr(cli_module, "load_saved_codex_api_key", lambda app_home: None)
     monkeypatch.setattr(cli_module.subprocess, "run", lambda *args, **kwargs: SimpleNamespace(returncode=0))
 
     result = runner.invoke(cli_module.app, ["doctor"])
@@ -273,8 +277,8 @@ def test_doctor_recommends_auth_set_key_when_key_is_missing(monkeypatch, tmp_pat
         cli_module,
         "inspect_installation_state",
         lambda settings: {
-            "metadata_version": "v0.2.8",
-            "installed_app_version": "0.2.8",
+            "metadata_version": "v0.2.9",
+            "installed_app_version": "0.2.9",
             "app_dir_exists": True,
             "wrapper_exists": True,
             "venv_entrypoint_exists": True,

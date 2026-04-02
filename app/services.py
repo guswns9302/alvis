@@ -672,6 +672,11 @@ class AlvisServices:
         paths["prompt"].write_text(prompt, encoding="utf-8")
         paths["contract"].write_text(contract.model_dump_json(), encoding="utf-8")
         command = self._task_runner_command(paths, contract.cwd)
+        env = dict(os.environ)
+        env["ALVIS_HOME"] = str(self.settings.app_home)
+        if self.settings.codex_api_key:
+            env["ALVIS_CODEX_API_KEY"] = self.settings.codex_api_key
+            env["CODEX_API_KEY"] = self.settings.codex_api_key
         try:
             subprocess.Popen(
                 command,
@@ -680,6 +685,7 @@ class AlvisServices:
                 stderr=subprocess.DEVNULL,
                 stdin=subprocess.DEVNULL,
                 start_new_session=True,
+                env=env,
             )
         except OSError as exc:
             self.append_event(
