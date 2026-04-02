@@ -6,6 +6,8 @@ from pathlib import Path
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from app.auth_store import load_saved_codex_api_key
+
 
 class Settings(BaseModel):
     model_config = ConfigDict(frozen=True)
@@ -54,6 +56,7 @@ def _workspace_id(path: Path) -> str:
 
 def get_settings(workspace_root: str | Path | None = None) -> Settings:
     app_home = Path(os.getenv("ALVIS_HOME", Path.home() / ".alvis")).expanduser()
+    saved_codex_api_key = load_saved_codex_api_key(app_home)
     default_workspace = workspace_root or os.getenv("ALVIS_WORKSPACE_ROOT") or os.getenv("ALVIS_REPO_ROOT") or Path.cwd()
     repo_root = Path(default_workspace).expanduser().resolve()
     workspace_id = _workspace_id(repo_root)
@@ -76,7 +79,7 @@ def get_settings(workspace_root: str | Path | None = None) -> Settings:
         worker_reasoning_effort=os.getenv("ALVIS_WORKER_REASONING_EFFORT", "medium"),
         worker_timeout_seconds=int(os.getenv("ALVIS_WORKER_TIMEOUT_SECONDS", "180")),
         worker_max_tool_rounds=int(os.getenv("ALVIS_WORKER_MAX_TOOL_ROUNDS", "12")),
-        codex_api_key=os.getenv("ALVIS_CODEX_API_KEY") or os.getenv("CODEX_API_KEY"),
+        codex_api_key=os.getenv("ALVIS_CODEX_API_KEY") or os.getenv("CODEX_API_KEY") or saved_codex_api_key,
         codex_command=os.getenv("ALVIS_CODEX_COMMAND", "codex"),
         tmux_path=os.getenv("ALVIS_TMUX_PATH"),
         daemon_host=os.getenv("ALVIS_DAEMON_HOST", "127.0.0.1"),

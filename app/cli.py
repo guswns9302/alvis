@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -10,6 +11,7 @@ import typer
 import uvicorn
 
 from app.api.server import create_app
+from app.auth_store import clear_saved_codex_api_key, credentials_path, load_saved_codex_api_key, save_codex_api_key
 from app.bootstrap import bootstrap_services
 from app.cli_formatters import (
     format_clean,
@@ -33,7 +35,9 @@ from app.version import __version__
 
 app = typer.Typer(help="Alvis CLI")
 daemon_app = typer.Typer(help="Daemon management")
+auth_app = typer.Typer(help="Authentication management")
 app.add_typer(daemon_app, name="daemon")
+app.add_typer(auth_app, name="auth")
 
 
 def _normalize_version(value: str | None) -> str | None:
@@ -96,6 +100,16 @@ def _emit(data, json_output: bool, formatter) -> None:
     typer.echo(formatter(data))
 
 
+def _restart_daemon_if_available(settings) -> str:
+    if not shutil.which("launchctl"):
+        return "skipped"
+    try:
+        LaunchdManager(settings).restart()
+        return "restarted"
+    except Exception:
+        return "failed"
+
+
 @app.command()
 def bootstrap():
     configure_logging()
@@ -122,6 +136,8 @@ def doctor(json_output: bool = typer.Option(False, "--json")):
         "sdk_installed": False,
         "sdk_import_error": None,
     }
+    saved_codex_api_key = load_saved_codex_api_key(settings.app_home)
+    key_source = "env" if (os.getenv("ALVIS_CODEX_API_KEY") or os.getenv("CODEX_API_KEY")) else "saved" if saved_codex_api_key else None
     payload = {
         "version": __version__,
         "workspace_root": str(_workspace_root()),
@@ -136,6 +152,7 @@ def doctor(json_output: bool = typer.Option(False, "--json")):
         "npm_available": sdk_runtime.get("npm_available"),
         "codex_sdk_package_available": sdk_runtime.get("sdk_installed"),
         "codex_api_key_configured": bool(settings.codex_api_key),
+        "codex_api_key_source": key_source,
         "shell_codex_command": settings.codex_command,
         "shell_codex_available": subprocess.run(["which", "codex"], check=False, capture_output=True, text=True).returncode == 0,
         "install_metadata_version": install_state.get("metadata_version"),
@@ -153,7 +170,7 @@ def doctor(json_output: bool = typer.Option(False, "--json")):
     elif payload["worker_backend"] == "codex-sdk" and not payload["codex_sdk_package_available"]:
         next_action = "run `alvis upgrade` to install Codex SDK dependencies"
     elif payload["worker_backend"] == "codex-sdk" and not payload["codex_api_key_configured"]:
-        next_action = "export CODEX_API_KEY and rerun `alvis doctor`"
+        next_action = "run `alvis auth set-key` and rerun `alvis doctor`"
     elif payload["worker_backend"] != "codex-sdk" and not payload["shell_codex_available"]:
         next_action = "install codex and rerun `alvis doctor`"
     elif payload["install_drift_detected"]:
@@ -183,6 +200,7 @@ def doctor(json_output: bool = typer.Option(False, "--json")):
                 f"npm: {'ok' if data.get('npm_available') else 'missing'}",
                 f"codex sdk package: {'ok' if data.get('codex_sdk_package_available') else 'missing'}",
                 f"codex api key: {'ok' if data.get('codex_api_key_configured') else 'missing'}",
+                f"codex api key source: {data.get('codex_api_key_source') or '-'}",
                 f"shell codex_command: {data.get('shell_codex_command') or '-'}",
                 f"shell codex: {'ok' if data['shell_codex_available'] else 'missing'}",
                 f"install metadata version: {data.get('install_metadata_version') or '-'}",
@@ -210,6 +228,68 @@ def doctor(json_output: bool = typer.Option(False, "--json")):
             ]
         ),
     )
+
+
+@auth_app.command("set-key")
+def auth_set_key(
+    key: str | None = typer.Option(None, "--key", help="Codex API key to store in Alvis credentials."),
+    json_output: bool = typer.Option(False, "--json"),
+):
+    settings = get_settings(_workspace_root())
+    api_key = key
+    if api_key is None:
+        if not sys.stdin.isatty():
+            typer.secho("provide --key when stdin is not interactive", fg=typer.colors.RED, err=True)
+            raise typer.Exit(code=1)
+        api_key = typer.prompt("CODEX_API_KEY", hide_input=True, confirmation_prompt=True).strip()
+    if not api_key:
+        typer.secho("CODEX_API_KEY cannot be empty", fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=1)
+    path = save_codex_api_key(settings.app_home, api_key)
+    daemon_action = _restart_daemon_if_available(settings)
+    payload = {
+        "status": "saved",
+        "credentials_path": str(path),
+        "daemon_action": daemon_action,
+    }
+    _emit(payload, json_output, lambda data: "\n".join([
+        "codex api key saved",
+        f"credentials path: {data['credentials_path']}",
+        f"daemon: {data['daemon_action']}",
+    ]))
+
+
+@auth_app.command("clear-key")
+def auth_clear_key(json_output: bool = typer.Option(False, "--json")):
+    settings = get_settings(_workspace_root())
+    removed = clear_saved_codex_api_key(settings.app_home)
+    daemon_action = _restart_daemon_if_available(settings)
+    payload = {
+        "status": "cleared" if removed else "missing",
+        "credentials_path": str(credentials_path(settings.app_home)),
+        "daemon_action": daemon_action,
+    }
+    _emit(payload, json_output, lambda data: "\n".join([
+        "codex api key cleared" if data["status"] == "cleared" else "codex api key was not set",
+        f"credentials path: {data['credentials_path']}",
+        f"daemon: {data['daemon_action']}",
+    ]))
+
+
+@auth_app.command("status")
+def auth_status(json_output: bool = typer.Option(False, "--json")):
+    settings = get_settings(_workspace_root())
+    saved = load_saved_codex_api_key(settings.app_home)
+    payload = {
+        "configured": bool(settings.codex_api_key),
+        "source": "env" if (os.getenv("ALVIS_CODEX_API_KEY") or os.getenv("CODEX_API_KEY")) else "saved" if saved else None,
+        "credentials_path": str(credentials_path(settings.app_home)),
+    }
+    _emit(payload, json_output, lambda data: "\n".join([
+        f"codex api key: {'configured' if data['configured'] else 'missing'}",
+        f"source: {data['source'] or '-'}",
+        f"credentials path: {data['credentials_path']}",
+    ]))
 
 
 @app.command()

@@ -102,6 +102,7 @@ def test_doctor_prints_daemon_runtime_details(monkeypatch, tmp_path):
     assert "worker backend: codex-sdk" in result.output
     assert "codex sdk package: ok" in result.output
     assert "codex api key: ok" in result.output
+    assert "codex api key source: -" in result.output
     assert "daemon worker backend: codex-sdk" in result.output
     assert f"daemon version: {cli_module.__version__}" in result.output
     assert "daemon db_path: /tmp/data/alvis.db" in result.output
@@ -237,8 +238,8 @@ def test_doctor_warns_when_codex_sdk_package_is_missing(monkeypatch, tmp_path):
         cli_module,
         "inspect_installation_state",
         lambda settings: {
-            "metadata_version": "v0.2.7",
-            "installed_app_version": "0.2.7",
+            "metadata_version": "v0.2.8",
+            "installed_app_version": "0.2.8",
             "app_dir_exists": True,
             "wrapper_exists": True,
             "venv_entrypoint_exists": True,
@@ -261,3 +262,88 @@ def test_doctor_warns_when_codex_sdk_package_is_missing(monkeypatch, tmp_path):
     assert result.exit_code == 0
     assert "codex sdk package: missing" in result.output
     assert "recommended action: run `alvis upgrade` to install Codex SDK dependencies" in result.output
+
+
+def test_doctor_recommends_auth_set_key_when_key_is_missing(monkeypatch, tmp_path):
+    monkeypatch.setattr(cli_module, "_workspace_root", lambda: tmp_path)
+    settings = _settings(tmp_path).model_copy(update={"codex_api_key": None})
+    monkeypatch.setattr(cli_module, "get_settings", lambda workspace_root=None: settings)
+    monkeypatch.setattr(cli_module, "_daemon_client", lambda: FakeDaemonClient())
+    monkeypatch.setattr(
+        cli_module,
+        "inspect_installation_state",
+        lambda settings: {
+            "metadata_version": "v0.2.8",
+            "installed_app_version": "0.2.8",
+            "app_dir_exists": True,
+            "wrapper_exists": True,
+            "venv_entrypoint_exists": True,
+        },
+    )
+    monkeypatch.setattr(cli_module, "load_saved_codex_api_key", lambda app_home: None)
+    monkeypatch.setattr(
+        cli_module,
+        "verify_codex_sdk_runtime",
+        lambda settings: {
+            "node_available": True,
+            "npm_available": True,
+            "sdk_installed": True,
+            "sdk_import_error": None,
+        },
+    )
+    monkeypatch.setattr(cli_module.subprocess, "run", lambda *args, **kwargs: SimpleNamespace(returncode=0))
+
+    result = runner.invoke(cli_module.app, ["doctor"])
+
+    assert result.exit_code == 0
+    assert "codex api key: missing" in result.output
+    assert "recommended action: run `alvis auth set-key` and rerun `alvis doctor`" in result.output
+
+
+def test_auth_set_key_persists_credentials_and_reports_restart(monkeypatch, tmp_path):
+    app_home = tmp_path / ".alvis"
+    settings = _settings(tmp_path).model_copy(update={"app_home": app_home, "codex_api_key": None})
+    monkeypatch.setattr(cli_module, "_workspace_root", lambda: tmp_path)
+    monkeypatch.setattr(cli_module, "get_settings", lambda workspace_root=None: settings)
+    monkeypatch.setattr(cli_module, "_restart_daemon_if_available", lambda settings: "restarted")
+
+    result = runner.invoke(cli_module.app, ["auth", "set-key", "--key", "codex-test-key"])
+
+    assert result.exit_code == 0
+    assert "codex api key saved" in result.output
+    assert "daemon: restarted" in result.output
+    credentials_path = app_home / "credentials.json"
+    assert credentials_path.exists()
+    assert '"codex_api_key": "codex-test-key"' in credentials_path.read_text(encoding="utf-8")
+
+
+def test_auth_status_reads_saved_key(monkeypatch, tmp_path):
+    app_home = tmp_path / ".alvis"
+    app_home.mkdir(parents=True, exist_ok=True)
+    (app_home / "credentials.json").write_text('{"codex_api_key":"saved-key"}', encoding="utf-8")
+    settings = _settings(tmp_path).model_copy(update={"app_home": app_home, "codex_api_key": "saved-key"})
+    monkeypatch.setattr(cli_module, "_workspace_root", lambda: tmp_path)
+    monkeypatch.setattr(cli_module, "get_settings", lambda workspace_root=None: settings)
+
+    result = runner.invoke(cli_module.app, ["auth", "status"])
+
+    assert result.exit_code == 0
+    assert "codex api key: configured" in result.output
+    assert "source: saved" in result.output
+
+
+def test_auth_clear_key_removes_saved_credentials(monkeypatch, tmp_path):
+    app_home = tmp_path / ".alvis"
+    app_home.mkdir(parents=True, exist_ok=True)
+    credentials_path = app_home / "credentials.json"
+    credentials_path.write_text('{"codex_api_key":"saved-key"}', encoding="utf-8")
+    settings = _settings(tmp_path).model_copy(update={"app_home": app_home, "codex_api_key": None})
+    monkeypatch.setattr(cli_module, "_workspace_root", lambda: tmp_path)
+    monkeypatch.setattr(cli_module, "get_settings", lambda workspace_root=None: settings)
+    monkeypatch.setattr(cli_module, "_restart_daemon_if_available", lambda settings: "restarted")
+
+    result = runner.invoke(cli_module.app, ["auth", "clear-key"])
+
+    assert result.exit_code == 0
+    assert "codex api key cleared" in result.output
+    assert not credentials_path.exists()
